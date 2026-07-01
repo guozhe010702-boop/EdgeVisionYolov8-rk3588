@@ -1,0 +1,136 @@
+基 Linux IPC的发布订阅消息问答题.txt
+
+
+
+# Compiled Object files
+*.o
+*.obj
+*.ko
+*.mod.o
+*.mod.c
+*.symvers
+*.order
+
+# Executables
+*.out
+*.elf
+*.bin
+*.hex
+
+# Shared libraries
+*.so
+*.so.*
+*.a
+*.la
+
+# Static libraries
+*.a
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Backup files
+*.bak
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Empty directories (optional, since git doesn't track empty dirs)
+shm/
+
+# ==================== 嵌入式Linux开发相关 ====================
+# 设备树
+*.dtb
+*.dtbo
+*.dts~
+*.dtsi~
+
+# 内核构建
+Module.symvers
+modules.order
+*.mod
+*.cmd
+.tmp_versions/
+*.su
+*.idb
+
+# U-Boot
+*.img
+*.scr
+*.spl
+
+# 交叉编译临时文件
+*.d
+*.i
+*.s
+
+# 文件系统镜像
+*.ext4
+*.ext2
+*.ext3
+*.fat
+*.img
+*.iso
+*.squashfs
+
+# ==================== AI应用开发相关 ====================
+# Python缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv/
+
+# 模型文件 (根据需要可取消注释具体类型)
+*.h5
+*.hdf5
+*.pb
+*.pbtxt
+*.ckpt
+*.pth
+*.pt
+*.ptl
+*.onnx
+*.engine
+*.trt
+*.mlmodel
+*.tflite
+
+# 数据集
+data/
+dataset/
+datasets/
+*.csv
+*.npy
+*.npz
+*.pickle
+*.pkl
+
+# 训练日志
+logs/
+runs/
+*.log
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb~
+
+# 模型缓存
+*.cache/
+.huggingface/
+.torch/
+
+# 环境配置
+.env
+.env.local
+.env.*.local

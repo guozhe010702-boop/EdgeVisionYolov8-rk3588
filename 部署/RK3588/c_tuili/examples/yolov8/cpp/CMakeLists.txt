@@ -140,7 +140,9 @@ install(TARGETS ${PROJECT_NAME}_video DESTINATION .)
 
 # 实时视频检测 Demo (摄像头)
 # 自带 V4L2 采集 (v4l2_capture.cc), 不依赖系统 libv4l2, MJPG 解码走 3rdparty/jpeg_turbo
-# 推流走 mjpeg_http_sink.cc (兼容 mjpg_streamer 的 output_http.so)
+# 推流支持两种模式:
+#   1. MJPEG-over-HTTP (mjpeg_http_sink.cc, 兼容 mjpg_streamer)
+#   2. RTMP H.264 (rtmp_sink.cc, MPP 硬编码 + librtmp, 搭配 mediamtx WebRTC)
 # 使用 NPU 零拷贝 (rknpu2/yolov8_zero_copy.cc + ZERO_COPY 宏),
 # letterbox 直接写入 rknn_create_mem 出来的 DMA 内存, 省一次 1.2MB memcpy
 add_executable(${PROJECT_NAME}_stream
@@ -148,6 +150,7 @@ add_executable(${PROJECT_NAME}_stream
     postprocess.cc
     v4l2_capture.cc
     mjpeg_http_sink.cc
+    rtmp_sink.cc
     rknpu2/yolov8_zero_copy.cc
 )
 
@@ -179,6 +182,90 @@ target_link_libraries(${PROJECT_NAME}_stream
     ${LIBRKNNRT}
     dl
 )
+
+# MPP 硬件编码 (H.264) + librtmp 推流 (Linux + 有 MPP 库即可, 不限架构)
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # 按架构和发行版搜索 MPP 库
+    find_library(MPP_LIBRARY
+        NAMES rockchip_mpp mpp
+        PATHS /usr/lib/aarch64-linux-gnu
+              /usr/lib/arm-linux-gnueabihf
+              /usr/lib/arm-linux-gnueabi
+              /usr/lib
+              /usr/local/lib
+    )
+    # 按架构和发行版搜索 librtmp
+    find_library(RTMP_LIBRARY
+        NAMES rtmp
+        PATHS /usr/lib/aarch64-linux-gnu
+              /usr/lib/arm-linux-gnueabihf
+              /usr/lib/arm-linux-gnueabi
+              /usr/lib
+              /usr/local/lib
+    )
+    # 搜索 MPP 头文件路径
+    find_path(MPP_INCLUDE_DIR
+        NAMES rk_mpi.h
+        PATHS /usr/include/rockchip
+              /usr/local/include/rockchip
+    )
+
+    if (MPP_LIBRARY AND RTMP_LIBRARY)
+        message(STATUS "Linking MPP: ${MPP_LIBRARY}")
+        message(STATUS "Linking RTMP: ${RTMP_LIBRARY}")
+        target_link_libraries(${PROJECT_NAME}_stream ${MPP_LIBRARY} ${RTMP_LIBRARY} ssl crypto)
+        if (MPP_INCLUDE_DIR)
+            target_include_directories(${PROJECT_NAME}_stream PRIVATE ${MPP_INCLUDE_DIR})
+        else()
+            target_include_directories(${PROJECT_NAME}_stream PRIVATE /usr/include/rockchip)
+        endif()
+
+        # 将 MPP/RTMP/SSL 运行时库打包到 install/lib, 方便整个 install 目录直接拷贝到新板子
+        # 使用 install(DIRECTORY) 保留软链接, 避免断链
+        get_filename_component(MPP_LIB_DIR ${MPP_LIBRARY} DIRECTORY)
+        get_filename_component(RTMP_LIB_DIR ${RTMP_LIBRARY} DIRECTORY)
+
+        # 搜索 libssl.so 和 libcrypto.so (librtmp 依赖)
+        find_library(SSL_LIBRARY
+            NAMES ssl ssl3
+            PATHS ${MPP_LIB_DIR} /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf /usr/lib
+        )
+        find_library(CRYPTO_LIBRARY
+            NAMES crypto crypto3
+            PATHS ${MPP_LIB_DIR} /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf /usr/lib
+        )
+
+        # 安装 MPP .so (带版本号的, 如 librockchip_mpp.so.1)
+        install(DIRECTORY ${MPP_LIB_DIR}/
+            DESTINATION lib
+            FILES_MATCHING PATTERN "librockchip_mpp*"
+        )
+        # 安装 librtmp .so
+        install(DIRECTORY ${RTMP_LIB_DIR}/
+            DESTINATION lib
+            FILES_MATCHING PATTERN "librtmp*"
+        )
+        # 安装 libssl/libcrypto .so (如果找到了)
+        if (SSL_LIBRARY)
+            get_filename_component(SSL_LIB_DIR ${SSL_LIBRARY} DIRECTORY)
+            install(DIRECTORY ${SSL_LIB_DIR}/
+                DESTINATION lib
+                FILES_MATCHING PATTERN "libssl*"
+            )
+        endif()
+        if (CRYPTO_LIBRARY)
+            get_filename_component(CRYPTO_LIB_DIR ${CRYPTO_LIBRARY} DIRECTORY)
+            install(DIRECTORY ${CRYPTO_LIB_DIR}/
+                DESTINATION lib
+                FILES_MATCHING PATTERN "libcrypto*"
+            )
+        endif()
+    else()
+        message(WARNING "MPP or RTMP library not found, RTMP streaming will not be available")
+        message(STATUS "  MPP_LIBRARY: ${MPP_LIBRARY}")
+        message(STATUS "  RTMP_LIBRARY: ${RTMP_LIBRARY}")
+    endif()
+endif()
 
 if (JPEG_TURBO_LIB AND EXISTS ${JPEG_TURBO_LIB})
     message(STATUS "Linking libturbojpeg: ${JPEG_TURBO_LIB}")

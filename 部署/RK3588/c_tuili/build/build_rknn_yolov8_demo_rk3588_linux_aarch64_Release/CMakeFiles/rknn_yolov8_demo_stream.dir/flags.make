@@ -4,7 +4,7 @@
 # compile CXX with /usr/bin/aarch64-linux-gnu-g++
 CXX_DEFINES = -DZERO_COPY
 
-CXX_INCLUDES = -I/home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/../../../3rdparty/jpeg_turbo/include -I/home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp -I/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/rknpu2/include -I/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include -I/home/orangepi/rknn_model_zoo-2.3.0/utils -I/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/stb_image -I/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/jpeg_turbo/include -I/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include
+CXX_INCLUDES = -I/home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/../../../3rdparty/jpeg_turbo/include -I/usr/include/rockchip -I/home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp -I/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/rknpu2/include -I/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include -I/home/orangepi/rknn_model_zoo-2.3.0/utils -I/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/stb_image -I/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/jpeg_turbo/include -I/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include
 
 CXX_FLAGS = -O3 -DNDEBUG
 

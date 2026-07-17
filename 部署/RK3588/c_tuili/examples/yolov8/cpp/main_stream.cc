@@ -33,6 +33,7 @@
 #include "image_drawing.h"
 #include "v4l2_capture.h"
 #include "mjpeg_http_sink.h"
+#include "rtmp_sink.h"
 
 #if defined(RV1106_1103)
     #include "dma_alloc.hpp"
@@ -49,10 +50,11 @@ static void on_sigint(int signo)
 /*-------------------------------------------
         实时视频检测 (摄像头)
         用法: ./rknn_yolov8_demo_stream <model_path> <camera_id|device_path>
-                                    [width] [height] [fps] [save_path] [push_port]
+                                    [width] [height] [fps] [save_path] [push_port|rtmp_url]
         示例: ./rknn_yolov8_demo_stream model/best.rknn 0
               ./rknn_yolov8_demo_stream model/best.rknn /dev/video0 1280 720 30 out.mp4
               ./rknn_yolov8_demo_stream model/best.rknn /dev/video0 0 0 0 "" 8080
+              ./rknn_yolov8_demo_stream model/best.rknn /dev/video0 0 0 0 "" rtmp://127.0.0.1:1935/live/stream
         按 'q' 退出预览
 -------------------------------------------*/
 static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
@@ -60,7 +62,8 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
                              int req_w, int req_h, int req_fps,
                              const char *save_path,
                              int show_window,
-                             MjpegHttpSink *push_sink)
+                             MjpegHttpSink *mjpeg_sink,
+                             RtmpSink *rtmp_sink)
 {
     V4L2Capture cap;
     if (cap.open(source, req_w, req_h, req_fps) != 0)
@@ -121,6 +124,13 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
         if (g_stop_requested.load())
         {
             printf("signal received, stopping stream...\n");
+            break;
+        }
+
+        // RTMP 发送失败 (连接断开): 自动退出, 不浪费 CPU
+        if (rtmp_sink != nullptr && rtmp_sink->sendFailed())
+        {
+            printf("RTMP connection lost, stopping stream...\n");
             break;
         }
 
@@ -231,12 +241,15 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
         }
 
         // ==================== 优化: 异步推流 ====================
-        // 旧: push_sink->push(bgr_for_save, 80) 同步编码+发送, 慢客户端拖死检测
-        // 新: submit() 只 swap 一次 Mat 句柄就返回, 编码发送在独立 sender 线程
+        // submit() 只 swap 一次 Mat 句柄就返回, 编码发送在独立 sender 线程
         //     submit 走 RGB, 跳过保存时的那次 BGR2RGB 转换
-        if (push_sink != nullptr)
+        if (mjpeg_sink != nullptr)
         {
-            push_sink->submit(rgb_frame, 80);
+            mjpeg_sink->submit(rgb_frame, 80);
+        }
+        if (rtmp_sink != nullptr)
+        {
+            rtmp_sink->submit(rgb_frame);
         }
 
         frame_index++;
@@ -252,7 +265,7 @@ int main(int argc, char **argv)
 {
     if (argc < 3)
     {
-        printf("%s <model_path> <camera_id|device_path> [width] [height] [fps] [save_path] [push_port]\n", argv[0]);
+        printf("%s <model_path> <camera_id|device_path> [width] [height] [fps] [save_path] [push_port|rtmp_url]\n", argv[0]);
         printf("  model_path    : RKNN 模型文件路径\n");
         printf("  camera_id     : 摄像头序号, 例如 0; 或设备路径 /dev/video0\n");
         printf("  width/height  : 可选, 请求的分辨率\n");
@@ -260,6 +273,11 @@ int main(int argc, char **argv)
         printf("  save_path     : 可选, 录制输出到该 mp4 文件; 不填则不保存\n");
         printf("  push_port     : 可选, MJPEG-over-HTTP 推流端口; 0 表示不推 (默认)\n");
         printf("                 输出格式与 mjpg_streamer 的 output_http.so 兼容\n");
+        printf("  rtmp_url      : 或以 rtmp:// 开头的 RTMP 推流地址\n");
+        printf("                 搭配 mediamtx, 浏览器通过 WebRTC 观看, 码率仅 ~1Mbps\n");
+        printf("示例:\n");
+        printf("  %s model/best.rknn /dev/video0 0 0 0 \"\" 8080\n", argv[0]);
+        printf("  %s model/best.rknn /dev/video0 0 0 0 \"\" rtmp://127.0.0.1:1935/live/stream\n", argv[0]);
         printf("按 'q' 或 ESC 退出预览\n");
         return -1;
     }
@@ -270,7 +288,7 @@ int main(int argc, char **argv)
     int req_h  = (argc >= 5) ? atoi(argv[4]) : 0;
     int req_fps= (argc >= 6) ? atoi(argv[5]) : 0;
     const char *save_path = (argc >= 7) ? argv[6] : NULL;
-    int push_port = (argc >= 8) ? atoi(argv[7]) : 0;
+    const char *push_arg  = (argc >= 8) ? argv[7] : NULL;
 
     // 预览窗口: 只要有 DISPLAY 环境变量就打开; 在没有显示的板子上保持关闭
     int show_window = (getenv("DISPLAY") != NULL) ? 1 : 0;
@@ -294,16 +312,42 @@ int main(int argc, char **argv)
     // SIGPIPE 写到已关闭的 socket 时默认终止进程, 这里忽略避免杀进程
     signal(SIGPIPE, SIG_IGN);
 
-    // MJPEG-over-HTTP 推流 (可选)
-    MjpegHttpSink *push_sink = nullptr;
-    if (push_port > 0)
+    // 推流: 根据 push_arg 判断是 MJPEG (纯数字端口) 还是 RTMP (rtmp:// URL)
+    MjpegHttpSink *mjpeg_sink = nullptr;
+    RtmpSink      *rtmp_sink  = nullptr;
+
+    if (push_arg != NULL && push_arg[0] != '\0')
     {
-        push_sink = new MjpegHttpSink();
-        if (push_sink->start(push_port) != 0)
+        if (strncmp(push_arg, "rtmp://", 7) == 0)
         {
-            printf("start MJPEG push server on port %d failed\n", push_port);
-            delete push_sink;
-            push_sink = nullptr;
+            // RTMP 推流模式 (H.264 + mediamtx/WebRTC)
+            rtmp_sink = new RtmpSink();
+            // 先打开摄像头获取实际分辨率和帧率, 再初始化编码器
+            // 这里先用请求参数, 后面 cap.open 后会拿到实际值
+            if (rtmp_sink->open(push_arg,
+                                req_w > 0 ? req_w : 640,
+                                req_h > 0 ? req_h : 480,
+                                req_fps > 0 ? req_fps : 30) != 0)
+            {
+                printf("RTMP open failed: %s\n", push_arg);
+                delete rtmp_sink;
+                rtmp_sink = nullptr;
+            }
+        }
+        else
+        {
+            // MJPEG-over-HTTP 推流模式 (传统)
+            int push_port = atoi(push_arg);
+            if (push_port > 0)
+            {
+                mjpeg_sink = new MjpegHttpSink();
+                if (mjpeg_sink->start(push_port) != 0)
+                {
+                    printf("start MJPEG push server on port %d failed\n", push_port);
+                    delete mjpeg_sink;
+                    mjpeg_sink = nullptr;
+                }
+            }
         }
     }
 
@@ -317,19 +361,26 @@ int main(int argc, char **argv)
     {
         printf("init_yolov8_model fail! ret=%d model_path=%s\n", ret, model_path);
         deinit_post_process();
+        if (mjpeg_sink) { mjpeg_sink->stop(); delete mjpeg_sink; }
+        if (rtmp_sink)  { rtmp_sink->close(); delete rtmp_sink; }
         return -1;
     }
 
     ret = run_stream_detect(&rknn_app_ctx, source, req_w, req_h, req_fps,
-                            save_path, show_window, push_sink);
+                            save_path, show_window, mjpeg_sink, rtmp_sink);
 
     deinit_post_process();
     release_yolov8_model(&rknn_app_ctx);
 
-    if (push_sink)
+    if (mjpeg_sink)
     {
-        push_sink->stop();
-        delete push_sink;
+        mjpeg_sink->stop();
+        delete mjpeg_sink;
+    }
+    if (rtmp_sink)
+    {
+        rtmp_sink->close();
+        delete rtmp_sink;
     }
     return ret;
 }

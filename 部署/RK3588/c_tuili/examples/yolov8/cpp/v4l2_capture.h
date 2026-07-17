@@ -40,8 +40,6 @@ private:
 
     // libturbojpeg (MJPG 解码)
     void *tj_ = nullptr;
-    unsigned char *tj_buf_ = nullptr;
-    size_t tj_buf_size_ = 0;
 
     int try_format(unsigned int pixfmt, const char *name, int w, int h, int fps);
     int init_mmap();

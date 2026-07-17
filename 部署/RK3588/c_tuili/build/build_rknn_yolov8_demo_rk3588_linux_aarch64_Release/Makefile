@@ -451,6 +451,30 @@ rknpu2/yolov8_zero_copy.cc.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rknn_yolov8_demo_stream.dir/build.make CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.s
 .PHONY : rknpu2/yolov8_zero_copy.cc.s
 
+rtmp_sink.o: rtmp_sink.cc.o
+.PHONY : rtmp_sink.o
+
+# target to build an object file
+rtmp_sink.cc.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rknn_yolov8_demo_stream.dir/build.make CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o
+.PHONY : rtmp_sink.cc.o
+
+rtmp_sink.i: rtmp_sink.cc.i
+.PHONY : rtmp_sink.i
+
+# target to preprocess a source file
+rtmp_sink.cc.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rknn_yolov8_demo_stream.dir/build.make CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.i
+.PHONY : rtmp_sink.cc.i
+
+rtmp_sink.s: rtmp_sink.cc.s
+.PHONY : rtmp_sink.s
+
+# target to generate assembly for a file
+rtmp_sink.cc.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/rknn_yolov8_demo_stream.dir/build.make CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.s
+.PHONY : rtmp_sink.cc.s
+
 v4l2_capture.o: v4l2_capture.cc.o
 .PHONY : v4l2_capture.o
 
@@ -516,6 +540,9 @@ help:
 	@echo "... rknpu2/yolov8_zero_copy.o"
 	@echo "... rknpu2/yolov8_zero_copy.i"
 	@echo "... rknpu2/yolov8_zero_copy.s"
+	@echo "... rtmp_sink.o"
+	@echo "... rtmp_sink.i"
+	@echo "... rtmp_sink.s"
 	@echo "... v4l2_capture.o"
 	@echo "... v4l2_capture.i"
 	@echo "... v4l2_capture.s"

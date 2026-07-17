@@ -46,12 +46,6 @@ void V4L2Capture::close()
         tjDestroy((tjhandle)tj_);
         tj_ = nullptr;
     }
-    if (tj_buf_)
-    {
-        free(tj_buf_);
-        tj_buf_ = nullptr;
-        tj_buf_size_ = 0;
-    }
 }
 
 int V4L2Capture::try_format(unsigned int pixfmt, const char *name, int w, int h, int fps)
@@ -206,37 +200,33 @@ void V4L2Capture::decode_mjpg(const void *data, size_t len, cv::Mat &out)
     }
     (void)jcol;
 
-    size_t need = (size_t)jw * (size_t)jh * 3;
-    if (need > tj_buf_size_)
-    {
-        if (tj_buf_) free(tj_buf_);
-        tj_buf_ = (unsigned char *)malloc(need);
-        tj_buf_size_ = need;
-    }
-    if (!tj_buf_)
-    {
-        out = cv::Mat();
-        return;
-    }
-
-    // 优化: 直接解码成 RGB (TJPF_RGB), 上层 letterbox 之前省一次 BGR2RGB 全帧 cvtColor
-    if (tjDecompress2((tjhandle)tj_,
-                      (unsigned char *)data, (unsigned long)len,
-                      tj_buf_, jw, 0, jh, TJPF_RGB, 0) < 0)
-    {
-        printf("[v4l2] tjDecompress2 failed: %s\n", tjGetErrorStr());
-        out = cv::Mat();
-        return;
-    }
-
-    // 注意: jw/jh 可能是摄像头报告的 stride 对齐后的尺寸, 但大多数情况 = width_/height_
+    // 优化: 直接解码到输出 Mat 的内存, 省掉 tj_buf_ 中间缓冲和 .clone() 拷贝
     if (jw == width_ && jh == height_)
     {
-        out = cv::Mat(height_, width_, CV_8UC3, tj_buf_).clone();
+        // 常见路径: JPEG 尺寸 == 采集尺寸, 直接解码到 out
+        if (out.rows != height_ || out.cols != width_ || out.type() != CV_8UC3)
+            out.create(height_, width_, CV_8UC3);
+        if (tjDecompress2((tjhandle)tj_,
+                          (unsigned char *)data, (unsigned long)len,
+                          out.data, width_, 0, height_, TJPF_RGB, 0) < 0)
+        {
+            printf("[v4l2] tjDecompress2 failed: %s\n", tjGetErrorStr());
+            out = cv::Mat();
+            return;
+        }
     }
     else
     {
-        cv::Mat tmp(jh, jw, CV_8UC3, tj_buf_);
+        // 少见路径: JPEG 尺寸 != 采集尺寸, 需 resize
+        cv::Mat tmp(jh, jw, CV_8UC3);
+        if (tjDecompress2((tjhandle)tj_,
+                          (unsigned char *)data, (unsigned long)len,
+                          tmp.data, jw, 0, jh, TJPF_RGB, 0) < 0)
+        {
+            printf("[v4l2] tjDecompress2 failed: %s\n", tjGetErrorStr());
+            out = cv::Mat();
+            return;
+        }
         cv::resize(tmp, out, cv::Size(width_, height_));
     }
 }

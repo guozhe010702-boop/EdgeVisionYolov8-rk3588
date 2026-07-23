@@ -83,19 +83,42 @@ if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE DIRECTORY FILES "/usr/lib/aarch64-linux-gnu/" FILES_MATCHING REGEX "/librockchip\\_mpp[^/]*$")
+  
+        file(GLOB _mpp_so "/usr/lib/aarch64-linux-gnu/librockchip_mpp.so*")
+        file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE SHARED_LIBRARY FILES ${_mpp_so})
+    
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE DIRECTORY FILES "/usr/lib/aarch64-linux-gnu/" FILES_MATCHING REGEX "/librtmp[^/]*$")
+  
+        file(GLOB _rtmp_so "/usr/lib/aarch64-linux-gnu/librtmp.so*")
+        file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE SHARED_LIBRARY FILES ${_rtmp_so})
+    
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE DIRECTORY FILES "/usr/lib/aarch64-linux-gnu/" FILES_MATCHING REGEX "/libssl[^/]*$")
+  
+            file(GLOB _ssl_so "/usr/lib/aarch64-linux-gnu/libssl.so*")
+            file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE SHARED_LIBRARY FILES ${_ssl_so})
+        
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE DIRECTORY FILES "/usr/lib/aarch64-linux-gnu/" FILES_MATCHING REGEX "/libcrypto[^/]*$")
+  
+            file(GLOB _crypto_so "/usr/lib/aarch64-linux-gnu/libcrypto.so*")
+            file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE SHARED_LIBRARY FILES ${_crypto_so})
+        
+endif()
+
+if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
+  
+        file(GLOB _rga_so "/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/Linux/aarch64/librga.so*")
+        file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/lib" TYPE SHARED_LIBRARY FILES ${_rga_so})
+    
+endif()
+
+if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/." TYPE PROGRAM FILES "/home/orangepi/rknn_model_zoo-2.3.0/mediamtx")
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
@@ -110,7 +133,7 @@ if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_
      NOT IS_SYMLINK "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/./rknn_yolov8_demo_stream")
     file(RPATH_CHANGE
          FILE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/./rknn_yolov8_demo_stream"
-         OLD_RPATH "/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/lib:/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/rknpu2/Linux/aarch64:"
+         OLD_RPATH "/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/rknpu2/Linux/aarch64:/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/lib:"
          NEW_RPATH "$ORIGIN/../lib")
     if(CMAKE_INSTALL_DO_STRIP)
       execute_process(COMMAND "/usr/bin/aarch64-linux-gnu-strip" "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/./rknn_yolov8_demo_stream")
@@ -136,6 +159,10 @@ if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_
       execute_process(COMMAND "/usr/bin/aarch64-linux-gnu-strip" "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/./rknn_yolov8_demo")
     endif()
   endif()
+endif()
+
+if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/." TYPE PROGRAM FILES "/home/orangepi/rknn_model_zoo-2.3.0/run.sh")
 endif()
 
 if("x${CMAKE_INSTALL_COMPONENT}x" STREQUAL "xUnspecifiedx" OR NOT CMAKE_INSTALL_COMPONENT)

@@ -352,12 +352,6 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/main_stream.cc.o: /home/orangepi/rknn_mod
   /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/core/cvdef.h \
   /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/imgproc/imgproc_c.h \
   /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/imgproc/types_c.h \
-  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/highgui.hpp \
-  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/imgcodecs.hpp \
-  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/videoio.hpp \
-  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/highgui/highgui_c.h \
-  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/imgcodecs/imgcodecs_c.h \
-  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/videoio/videoio_c.h \
   /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/yolov8.h \
   /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/rknpu2/include/rknn_api.h \
   /home/orangepi/rknn_model_zoo-2.3.0/utils/common.h \
@@ -1412,7 +1406,17 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o: /home/orangepi/rknn_model
   /usr/include/aarch64-linux-gnu/sys/time.h \
   /usr/include/librtmp/rtmp.h \
   /usr/include/librtmp/amf.h \
-  /usr/include/librtmp/log.h
+  /usr/include/librtmp/log.h \
+  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d.h \
+  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_version.h \
+  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_type.h \
+  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/rga.h \
+  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_common.h \
+  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_buffer.h \
+  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_single.h \
+  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_task.h \
+  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_mpi.h \
+  /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/rga.h
 
 CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/v4l2_capture.cc \
   /usr/include/stdc-predef.h \
@@ -1718,6 +1722,10 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_mo
   /usr/include/aarch64-linux-gnu/bits/stat.h \
   /usr/include/aarch64-linux-gnu/bits/struct_stat.h \
   /usr/include/aarch64-linux-gnu/bits/fcntl2.h \
+  /usr/include/poll.h \
+  /usr/include/aarch64-linux-gnu/sys/poll.h \
+  /usr/include/aarch64-linux-gnu/bits/poll.h \
+  /usr/include/aarch64-linux-gnu/bits/poll2.h \
   /usr/include/unistd.h \
   /usr/include/aarch64-linux-gnu/bits/posix_opt.h \
   /usr/include/aarch64-linux-gnu/bits/environments.h \
@@ -1770,13 +1778,25 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_mo
 
 /usr/include/aarch64-linux-gnu/bits/mman-map-flags-generic.h:
 
-/usr/include/aarch64-linux-gnu/bits/mman.h:
-
 /usr/include/aarch64-linux-gnu/bits/ioctl-types.h:
 
 /usr/include/asm-generic/ioctls.h:
 
+/usr/include/aarch64-linux-gnu/sys/poll.h:
+
+/usr/include/aarch64-linux-gnu/bits/poll2.h:
+
 /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/v4l2_capture.cc:
+
+/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_task.h:
+
+/usr/include/aarch64-linux-gnu/bits/mman.h:
+
+/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_buffer.h:
+
+/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_type.h:
+
+/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d.h:
 
 /usr/include/librtmp/log.h:
 
@@ -1818,6 +1838,8 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_mo
 
 /usr/include/aarch64-linux-gnu/bits/fcntl-linux.h:
 
+/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/rga.h:
+
 /usr/include/aarch64-linux-gnu/bits/fcntl.h:
 
 /usr/include/fcntl.h:
@@ -1827,6 +1849,8 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_mo
 /usr/include/rockchip/rk_venc_cfg.h:
 
 /usr/include/rockchip/rk_venc_rc.h:
+
+/usr/include/poll.h:
 
 /usr/include/rockchip/mpp_packet.h:
 
@@ -1874,12 +1898,6 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_mo
 
 /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/rknpu2/include/rknn_api.h:
 
-/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/imgcodecs/imgcodecs_c.h:
-
-/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/highgui/highgui_c.h:
-
-/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/imgcodecs.hpp:
-
 /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/imgproc/types_c.h:
 
 /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/imgproc/imgproc_c.h:
@@ -1917,8 +1935,6 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_mo
 /usr/include/c++/11/bits/cxxabi_init_exception.h:
 
 /usr/include/c++/11/istream:
-
-/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/videoio.hpp:
 
 /usr/include/c++/11/complex:
 
@@ -2108,6 +2124,8 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_mo
 
 /usr/include/aarch64-linux-gnu/asm/types.h:
 
+/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_common.h:
+
 /usr/include/c++/11/bits/basic_ios.tcc:
 
 /usr/include/c++/11/bits/enable_special_members.h:
@@ -2135,6 +2153,8 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_mo
 /usr/include/aarch64-linux-gnu/bits/select2.h:
 
 /usr/include/aarch64-linux-gnu/bits/stdlib-float.h:
+
+/usr/include/aarch64-linux-gnu/bits/poll.h:
 
 /usr/include/c++/11/bits/functexcept.h:
 
@@ -2404,6 +2424,8 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_mo
 
 /usr/include/c++/11/bits/exception_defines.h:
 
+/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_version.h:
+
 /usr/include/c++/11/bits/hash_bytes.h:
 
 /usr/include/c++/11/bits/move.h:
@@ -2478,8 +2500,6 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_mo
 
 /usr/include/c++/11/ext/atomicity.h:
 
-/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/highgui.hpp:
-
 /usr/include/unistd.h:
 
 /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/main_stream.cc:
@@ -2491,6 +2511,8 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_mo
 /usr/include/librtmp/rtmp.h:
 
 /usr/include/c++/11/ext/type_traits.h:
+
+/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_mpi.h:
 
 /usr/include/c++/11/bits/cpp_type_traits.h:
 
@@ -2541,6 +2563,8 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_mo
 /usr/include/c++/11/bits/locale_facets.h:
 
 /usr/include/c++/11/bits/exception.h:
+
+/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/include/im2d_single.h:
 
 /usr/include/c++/11/bits/basic_ios.h:
 
@@ -2599,8 +2623,6 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o: /home/orangepi/rknn_mo
 /usr/include/stdc-predef.h:
 
 /usr/include/c++/11/bits/alloc_traits.h:
-
-/home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/include/opencv2/videoio/videoio_c.h:
 
 /usr/include/c++/11/bits/hashtable_policy.h:
 

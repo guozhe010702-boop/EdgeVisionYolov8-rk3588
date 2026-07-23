@@ -62,20 +62,30 @@ static int read_image_jpeg(const char* path, image_buffer_t* image)
     struct timeval tv1, tv2;
 
     if ((jpegFile = fopen(path, "rb")) == NULL) {
-        printf("open input file failure\n");
+        printf("open input file failure: %s\n", path);
+        return NULL;
     }
     if (fseek(jpegFile, 0, SEEK_END) < 0 || (size = ftell(jpegFile)) < 0 || fseek(jpegFile, 0, SEEK_SET) < 0) {
         printf("determining input file size failure\n");
+        fclose(jpegFile);
+        return NULL;
     }
     if (size == 0) {
         printf("determining input file size, Input file contains no data\n");
+        fclose(jpegFile);
+        return NULL;
     }
     jpegSize = (unsigned long)size;
     if ((jpegBuf = (unsigned char*)malloc(jpegSize * sizeof(unsigned char))) == NULL) {
         printf("allocating JPEG buffer\n");
+        fclose(jpegFile);
+        return NULL;
     }
     if (fread(jpegBuf, jpegSize, 1, jpegFile) < 1) {
-        printf("reading input file");
+        printf("reading input file\n");
+        free(jpegBuf);
+        fclose(jpegFile);
+        return NULL;
     }
     fclose(jpegFile);
     jpegFile = NULL;
@@ -276,9 +286,9 @@ int write_image(const char* path, const image_buffer_t* img)
         strcmp(_ext, ".JPEG") == 0) {
         int quality = 95;
         ret = write_image_jpeg(path, quality, img);
-    } else if (strcmp(_ext, ".png") == 0 | strcmp(_ext, ".PNG") == 0) {
+    } else if (strcmp(_ext, ".png") == 0 || strcmp(_ext, ".PNG") == 0) {
         ret = stbi_write_png(path, width, height, channel, data, 0);
-    } else if (strcmp(_ext, ".data") == 0 | strcmp(_ext, ".DATA") == 0) {
+    } else if (strcmp(_ext, ".data") == 0 || strcmp(_ext, ".DATA") == 0) {
         int size = get_image_size(img);
         ret = write_data_to_file(path, data, size);
     } else {
@@ -446,7 +456,6 @@ static int convert_image_cpu(image_buffer_t *src, image_buffer_t *dst, image_rec
         printf("convert_image_cpu fail %d\n", reti);
         return -1;
     }
-    printf("finish\n");
     return 0;
 }
 
@@ -759,10 +768,6 @@ int convert_image_with_letterbox(image_buffer_t* src_image, image_buffer_t* dst_
         dst_box.right = dst_box.left + resize_w - 1;
         _left_offset = dst_box.left;
     }
-    printf("scale=%f dst_box=(%d %d %d %d) allow_slight_change=%d _left_offset=%d _top_offset=%d padding_w=%d padding_h=%d\n",
-        scale, dst_box.left, dst_box.top, dst_box.right, dst_box.bottom, allow_slight_change,
-        _left_offset, _top_offset, padding_w, padding_h);
-
     //set offset and scale
     if(letterbox != NULL){
         letterbox->scale = scale;

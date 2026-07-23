@@ -92,6 +92,10 @@ private:
     void deinit_mpp();
     int  rgb_to_nv12(const unsigned char *rgb, int src_w, int src_h,
                      unsigned char *nv12, int enc_w, int enc_h);
+    bool try_rga_rgb_to_nv12(const cv::Mat &rgb);  // RGA 硬件加速, 失败返回 false
+
+    // ==================== RGA 缓存 ====================
+    uint32_t rga_dst_handle_ = 0;   // 预导入 MPP DMA buffer 的 RGA handle (0=未导入)
 };
 
 #endif

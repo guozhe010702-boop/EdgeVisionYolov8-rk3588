@@ -1,0 +1,13 @@
+prefix=/usr
+exec_prefix=${prefix}
+libdir=/usr/lib/aarch64-linux-gnu
+incdir=${prefix}/include
+
+Name: librtmp
+Description: RTMP implementation
+Version: v2.4
+Requires.private: gnutls,hogweed,nettle
+URL: http://rtmpdump.mplayerhq.hu
+Libs: -L${libdir} -lrtmp -lz -lgmp
+Libs.private: 
+Cflags: -I${incdir}

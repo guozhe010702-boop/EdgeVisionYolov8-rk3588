@@ -125,9 +125,9 @@ utils.out/clean: utils.out/CMakeFiles/audioutils.dir/clean
 # Target rules for target CMakeFiles/rknn_yolov8_demo.dir
 
 # All Build rule for target.
+CMakeFiles/rknn_yolov8_demo.dir/all: utils.out/CMakeFiles/imageutils.dir/all
 CMakeFiles/rknn_yolov8_demo.dir/all: utils.out/CMakeFiles/fileutils.dir/all
 CMakeFiles/rknn_yolov8_demo.dir/all: utils.out/CMakeFiles/imagedrawing.dir/all
-CMakeFiles/rknn_yolov8_demo.dir/all: utils.out/CMakeFiles/imageutils.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rknn_yolov8_demo.dir/build.make CMakeFiles/rknn_yolov8_demo.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rknn_yolov8_demo.dir/build.make CMakeFiles/rknn_yolov8_demo.dir/build
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/home/orangepi/rknn_model_zoo-2.3.0/build/build_rknn_yolov8_demo_rk3588_linux_aarch64_Release/CMakeFiles --progress-num=9,10,11,12 "Built target rknn_yolov8_demo"
@@ -153,9 +153,9 @@ CMakeFiles/rknn_yolov8_demo.dir/clean:
 # Target rules for target CMakeFiles/rknn_yolov8_demo_zero_copy.dir
 
 # All Build rule for target.
+CMakeFiles/rknn_yolov8_demo_zero_copy.dir/all: utils.out/CMakeFiles/imageutils.dir/all
 CMakeFiles/rknn_yolov8_demo_zero_copy.dir/all: utils.out/CMakeFiles/fileutils.dir/all
 CMakeFiles/rknn_yolov8_demo_zero_copy.dir/all: utils.out/CMakeFiles/imagedrawing.dir/all
-CMakeFiles/rknn_yolov8_demo_zero_copy.dir/all: utils.out/CMakeFiles/imageutils.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rknn_yolov8_demo_zero_copy.dir/build.make CMakeFiles/rknn_yolov8_demo_zero_copy.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rknn_yolov8_demo_zero_copy.dir/build.make CMakeFiles/rknn_yolov8_demo_zero_copy.dir/build
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/home/orangepi/rknn_model_zoo-2.3.0/build/build_rknn_yolov8_demo_rk3588_linux_aarch64_Release/CMakeFiles --progress-num=24,25,26,27 "Built target rknn_yolov8_demo_zero_copy"
@@ -181,9 +181,9 @@ CMakeFiles/rknn_yolov8_demo_zero_copy.dir/clean:
 # Target rules for target CMakeFiles/rknn_yolov8_demo_video.dir
 
 # All Build rule for target.
+CMakeFiles/rknn_yolov8_demo_video.dir/all: utils.out/CMakeFiles/imageutils.dir/all
 CMakeFiles/rknn_yolov8_demo_video.dir/all: utils.out/CMakeFiles/fileutils.dir/all
 CMakeFiles/rknn_yolov8_demo_video.dir/all: utils.out/CMakeFiles/imagedrawing.dir/all
-CMakeFiles/rknn_yolov8_demo_video.dir/all: utils.out/CMakeFiles/imageutils.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rknn_yolov8_demo_video.dir/build.make CMakeFiles/rknn_yolov8_demo_video.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rknn_yolov8_demo_video.dir/build.make CMakeFiles/rknn_yolov8_demo_video.dir/build
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/home/orangepi/rknn_model_zoo-2.3.0/build/build_rknn_yolov8_demo_rk3588_linux_aarch64_Release/CMakeFiles --progress-num=20,21,22,23 "Built target rknn_yolov8_demo_video"
@@ -209,9 +209,9 @@ CMakeFiles/rknn_yolov8_demo_video.dir/clean:
 # Target rules for target CMakeFiles/rknn_yolov8_demo_stream.dir
 
 # All Build rule for target.
+CMakeFiles/rknn_yolov8_demo_stream.dir/all: utils.out/CMakeFiles/imageutils.dir/all
 CMakeFiles/rknn_yolov8_demo_stream.dir/all: utils.out/CMakeFiles/fileutils.dir/all
 CMakeFiles/rknn_yolov8_demo_stream.dir/all: utils.out/CMakeFiles/imagedrawing.dir/all
-CMakeFiles/rknn_yolov8_demo_stream.dir/all: utils.out/CMakeFiles/imageutils.dir/all
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rknn_yolov8_demo_stream.dir/build.make CMakeFiles/rknn_yolov8_demo_stream.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/rknn_yolov8_demo_stream.dir/build.make CMakeFiles/rknn_yolov8_demo_stream.dir/build
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/home/orangepi/rknn_model_zoo-2.3.0/build/build_rknn_yolov8_demo_rk3588_linux_aarch64_Release/CMakeFiles --progress-num=13,14,15,16,17,18,19 "Built target rknn_yolov8_demo_stream"

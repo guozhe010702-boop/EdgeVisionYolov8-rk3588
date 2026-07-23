@@ -73,12 +73,17 @@ set(OPENCV_LIBS
 set(OPENCV_LIB_DIR      ${OPENCV_LIB_DIR}      PARENT_SCOPE)
 set(OPENCV_INCLUDE_DIR  ${OPENCV_INCLUDE_DIR}  PARENT_SCOPE)
 set(OPENCV_LIBS         ${OPENCV_LIBS}         PARENT_SCOPE)
-# 用 DIRECTORY 复制整个目录, 保留 .so -> .so.3.4 -> .so.3.4.5 三级软链,
-# 避免只复制裸 .so 名称导致断链
-install(DIRECTORY ${OPENCV_LIB_DIR}/
-    DESTINATION lib
-    FILES_MATCHING PATTERN "libopencv_*"
-)
+# 用 install(CODE) + file(GLOB) 精确安装实际使用的 OpenCV 模块
+# 避免 install(DIRECTORY) 把所有模块 (dnn/ml/stitching 等) 都拷贝进来
+install(CODE "
+    file(GLOB _cv_core    \"${OPENCV_LIB_DIR}/libopencv_core.so*\")
+    file(GLOB _cv_imgproc \"${OPENCV_LIB_DIR}/libopencv_imgproc.so*\")
+    file(GLOB _cv_imgcodecs \"${OPENCV_LIB_DIR}/libopencv_imgcodecs.so*\")
+    file(GLOB _cv_videoio \"${OPENCV_LIB_DIR}/libopencv_videoio.so*\")
+    file(GLOB _cv_highgui \"${OPENCV_LIB_DIR}/libopencv_highgui.so*\")
+    file(INSTALL DESTINATION \"\${CMAKE_INSTALL_PREFIX}/lib\" TYPE SHARED_LIBRARY
+        FILES \${_cv_core} \${_cv_imgproc} \${_cv_imgcodecs} \${_cv_videoio} \${_cv_highgui})
+")
 
 # timer
 set(TIMER_PATH ${CMAKE_CURRENT_SOURCE_DIR}/timer)

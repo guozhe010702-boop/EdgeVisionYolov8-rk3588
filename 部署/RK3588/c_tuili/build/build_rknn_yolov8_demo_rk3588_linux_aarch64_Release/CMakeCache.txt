@@ -224,6 +224,10 @@ DISABLE_RGA:UNINITIALIZED=OFF
 //No help, variable specified on the command line.
 ENABLE_ASAN:UNINITIALIZED=OFF
 
+//Disable OpenCV highgui/videoio for headless streaming (reduces
+// runtime deps)
+HEADLESS:BOOL=ON
+
 //Path to a file.
 MPP_INCLUDE_DIR:PATH=/usr/include/rockchip
 

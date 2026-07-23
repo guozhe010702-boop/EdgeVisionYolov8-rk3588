@@ -13,7 +13,7 @@ check*.onnx
 
 # ignore the following folder name
 build
-install
+
 
 # OpenCV 源码已在 3rdparty/ 之外独立准备, 不需要进 rknn_model_zoo 仓库
 3rdparty/opencv-3.4.5/opencv/

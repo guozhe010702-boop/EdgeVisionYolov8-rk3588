@@ -32,8 +32,6 @@ set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib")
 # 这里只需要拿到 lib 列表和 include 路径供 target 使用
 set(OPENCV_INCLUDE_DIR ${OPENCV_INCLUDE_DIR})
 
-file(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cc)
-
 add_executable(${PROJECT_NAME}
     main.cc
     postprocess.cc
@@ -145,16 +143,74 @@ install(TARGETS ${PROJECT_NAME}_video DESTINATION .)
 #   2. RTMP H.264 (rtmp_sink.cc, MPP 硬编码 + librtmp, 搭配 mediamtx WebRTC)
 # 使用 NPU 零拷贝 (rknpu2/yolov8_zero_copy.cc + ZERO_COPY 宏),
 # letterbox 直接写入 rknn_create_mem 出来的 DMA 内存, 省一次 1.2MB memcpy
-add_executable(${PROJECT_NAME}_stream
+#
+# MPP/RTMP 条件编译: 找到 MPP+RTMP 时启用 RTMP 推流, 否则只编译 MJPEG 推流
+set(STREAM_SRCS
     main_stream.cc
     postprocess.cc
     v4l2_capture.cc
     mjpeg_http_sink.cc
-    rtmp_sink.cc
     rknpu2/yolov8_zero_copy.cc
 )
 
+# 检测 MPP + RTMP 是否可用 (Linux 平台, 按架构和发行版搜索)
+set(HAVE_MPP_RTMP OFF)
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_library(MPP_LIBRARY
+        NAMES rockchip_mpp mpp
+        PATHS /usr/lib/aarch64-linux-gnu
+              /usr/lib/arm-linux-gnueabihf
+              /usr/lib/arm-linux-gnueabi
+              /usr/lib
+              /usr/local/lib
+              ${CMAKE_SYSROOT}/usr/lib
+    )
+    find_library(RTMP_LIBRARY
+        NAMES rtmp
+        PATHS /usr/lib/aarch64-linux-gnu
+              /usr/lib/arm-linux-gnueabihf
+              /usr/lib/arm-linux-gnueabi
+              /usr/lib
+              /usr/local/lib
+              ${CMAKE_SYSROOT}/usr/lib
+    )
+    find_path(MPP_INCLUDE_DIR
+        NAMES rk_mpi.h
+        PATHS /usr/include/rockchip
+              /usr/local/include/rockchip
+              ${CMAKE_SYSROOT}/usr/include/rockchip
+    )
+    if (MPP_LIBRARY AND RTMP_LIBRARY)
+        set(HAVE_MPP_RTMP ON)
+    endif()
+endif()
+
+# RTMP 推流功能: 仅在 MPP+RTMP 都可用时编入
+if (HAVE_MPP_RTMP)
+    list(APPEND STREAM_SRCS rtmp_sink.cc)
+    message(STATUS "RTMP streaming: ENABLED (MPP=${MPP_LIBRARY}, RTMP=${RTMP_LIBRARY})")
+else()
+    message(WARNING "MPP or RTMP not found, RTMP streaming disabled (MJPEG still available)")
+    message(STATUS "  MPP_LIBRARY: ${MPP_LIBRARY}")
+    message(STATUS "  RTMP_LIBRARY: ${RTMP_LIBRARY}")
+endif()
+
+add_executable(${PROJECT_NAME}_stream ${STREAM_SRCS})
+
+# HEADLESS 模式: 去除 OpenCV highgui/videoio 依赖, 适用无头板部署
+# 去除 imshow/waitKey/VideoWriter, 依赖链从 100+ 降到 ~20 个 .so
+option(HEADLESS "Disable OpenCV highgui/videoio for headless streaming (reduces runtime deps)" ON)
+if (HEADLESS)
+    target_compile_definitions(${PROJECT_NAME}_stream PRIVATE HEADLESS)
+    message(STATUS "HEADLESS mode: ON (no OpenCV highgui/videoio, minimal deps)")
+else()
+    message(STATUS "HEADLESS mode: OFF (full OpenCV with highgui/videoio)")
+endif()
+
 target_compile_definitions(${PROJECT_NAME}_stream PRIVATE ZERO_COPY)
+if (HAVE_MPP_RTMP)
+    target_compile_definitions(${PROJECT_NAME}_stream PRIVATE HAVE_MPP_RTMP)
+endif()
 
 # 定位 libturbojpeg.a (只在 linux aarch64/armhf/armhf_uclibc/x64 平台有预编译)
 set(JPEG_TURBO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../3rdparty/jpeg_turbo)
@@ -178,92 +234,87 @@ target_link_libraries(${PROJECT_NAME}_stream
     imageutils
     fileutils
     imagedrawing
-    ${OPENCV_LIBS}
     ${LIBRKNNRT}
     dl
 )
 
-# MPP 硬件编码 (H.264) + librtmp 推流 (Linux + 有 MPP 库即可, 不限架构)
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # 按架构和发行版搜索 MPP 库
-    find_library(MPP_LIBRARY
-        NAMES rockchip_mpp mpp
-        PATHS /usr/lib/aarch64-linux-gnu
-              /usr/lib/arm-linux-gnueabihf
-              /usr/lib/arm-linux-gnueabi
-              /usr/lib
-              /usr/local/lib
+# HEADLESS 模式: 只链接 OpenCV core+imgproc (无 highgui/videoio 的 GTK3/GStreamer/FFmpeg 依赖链)
+if (HEADLESS)
+    target_link_libraries(${PROJECT_NAME}_stream
+        ${OPENCV_LIB_DIR}/libopencv_core.so
+        ${OPENCV_LIB_DIR}/libopencv_imgproc.so
     )
-    # 按架构和发行版搜索 librtmp
-    find_library(RTMP_LIBRARY
-        NAMES rtmp
-        PATHS /usr/lib/aarch64-linux-gnu
-              /usr/lib/arm-linux-gnueabihf
-              /usr/lib/arm-linux-gnueabi
-              /usr/lib
-              /usr/local/lib
-    )
-    # 搜索 MPP 头文件路径
-    find_path(MPP_INCLUDE_DIR
-        NAMES rk_mpi.h
-        PATHS /usr/include/rockchip
-              /usr/local/include/rockchip
-    )
+else()
+    target_link_libraries(${PROJECT_NAME}_stream ${OPENCV_LIBS})
+endif()
 
-    if (MPP_LIBRARY AND RTMP_LIBRARY)
-        message(STATUS "Linking MPP: ${MPP_LIBRARY}")
-        message(STATUS "Linking RTMP: ${RTMP_LIBRARY}")
-        target_link_libraries(${PROJECT_NAME}_stream ${MPP_LIBRARY} ${RTMP_LIBRARY} ssl crypto)
-        if (MPP_INCLUDE_DIR)
-            target_include_directories(${PROJECT_NAME}_stream PRIVATE ${MPP_INCLUDE_DIR})
-        else()
-            target_include_directories(${PROJECT_NAME}_stream PRIVATE /usr/include/rockchip)
-        endif()
-
-        # 将 MPP/RTMP/SSL 运行时库打包到 install/lib, 方便整个 install 目录直接拷贝到新板子
-        # 使用 install(DIRECTORY) 保留软链接, 避免断链
-        get_filename_component(MPP_LIB_DIR ${MPP_LIBRARY} DIRECTORY)
-        get_filename_component(RTMP_LIB_DIR ${RTMP_LIBRARY} DIRECTORY)
-
-        # 搜索 libssl.so 和 libcrypto.so (librtmp 依赖)
-        find_library(SSL_LIBRARY
-            NAMES ssl ssl3
-            PATHS ${MPP_LIB_DIR} /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf /usr/lib
-        )
-        find_library(CRYPTO_LIBRARY
-            NAMES crypto crypto3
-            PATHS ${MPP_LIB_DIR} /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf /usr/lib
-        )
-
-        # 安装 MPP .so (带版本号的, 如 librockchip_mpp.so.1)
-        install(DIRECTORY ${MPP_LIB_DIR}/
-            DESTINATION lib
-            FILES_MATCHING PATTERN "librockchip_mpp*"
-        )
-        # 安装 librtmp .so
-        install(DIRECTORY ${RTMP_LIB_DIR}/
-            DESTINATION lib
-            FILES_MATCHING PATTERN "librtmp*"
-        )
-        # 安装 libssl/libcrypto .so (如果找到了)
-        if (SSL_LIBRARY)
-            get_filename_component(SSL_LIB_DIR ${SSL_LIBRARY} DIRECTORY)
-            install(DIRECTORY ${SSL_LIB_DIR}/
-                DESTINATION lib
-                FILES_MATCHING PATTERN "libssl*"
-            )
-        endif()
-        if (CRYPTO_LIBRARY)
-            get_filename_component(CRYPTO_LIB_DIR ${CRYPTO_LIBRARY} DIRECTORY)
-            install(DIRECTORY ${CRYPTO_LIB_DIR}/
-                DESTINATION lib
-                FILES_MATCHING PATTERN "libcrypto*"
-            )
-        endif()
+# MPP/RTMP 链接 + 运行时库打包 (仅 HAVE_MPP_RTMP 时)
+if (HAVE_MPP_RTMP)
+    target_link_libraries(${PROJECT_NAME}_stream ${MPP_LIBRARY} ${RTMP_LIBRARY} ssl crypto)
+    if (MPP_INCLUDE_DIR)
+        target_include_directories(${PROJECT_NAME}_stream PRIVATE ${MPP_INCLUDE_DIR})
     else()
-        message(WARNING "MPP or RTMP library not found, RTMP streaming will not be available")
-        message(STATUS "  MPP_LIBRARY: ${MPP_LIBRARY}")
-        message(STATUS "  RTMP_LIBRARY: ${RTMP_LIBRARY}")
+        target_include_directories(${PROJECT_NAME}_stream PRIVATE /usr/include/rockchip)
+    endif()
+    # RGA: RGB→NV12 硬件加速 (rtmp_sink.cc 中使用, MPP DMA buffer 做 imcvtcolor)
+    target_include_directories(${PROJECT_NAME}_stream PRIVATE ${LIBRGA_INCLUDES})
+    target_link_libraries(${PROJECT_NAME}_stream ${LIBRGA})
+
+    # 将 MPP/RTMP/SSL/RGA 运行时库打包到 install/lib
+    # 使用 install(CODE) + file(GLOB) 精确安装 .so 文件 (含符号链接), 避免 install(DIRECTORY) 把整个系统 lib 目录树拷贝进来
+    get_filename_component(MPP_LIB_DIR ${MPP_LIBRARY} DIRECTORY)
+    get_filename_component(RTMP_LIB_DIR ${RTMP_LIBRARY} DIRECTORY)
+
+    find_library(SSL_LIBRARY
+        NAMES ssl ssl3
+        PATHS ${MPP_LIB_DIR} /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf /usr/lib
+    )
+    find_library(CRYPTO_LIBRARY
+        NAMES crypto crypto3
+        PATHS ${MPP_LIB_DIR} /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf /usr/lib
+    )
+
+    # MPP .so (librockchip_mpp.so → .so.1 → .so.0)
+    install(CODE "
+        file(GLOB _mpp_so \"${MPP_LIB_DIR}/librockchip_mpp.so*\")
+        file(INSTALL DESTINATION \"\${CMAKE_INSTALL_PREFIX}/lib\" TYPE SHARED_LIBRARY FILES \${_mpp_so})
+    ")
+    # RTMP .so (librtmp.so → .so.1)
+    install(CODE "
+        file(GLOB _rtmp_so \"${RTMP_LIB_DIR}/librtmp.so*\")
+        file(INSTALL DESTINATION \"\${CMAKE_INSTALL_PREFIX}/lib\" TYPE SHARED_LIBRARY FILES \${_rtmp_so})
+    ")
+    # SSL .so
+    if (SSL_LIBRARY)
+        get_filename_component(SSL_LIB_DIR ${SSL_LIBRARY} DIRECTORY)
+        install(CODE "
+            file(GLOB _ssl_so \"${SSL_LIB_DIR}/libssl.so*\")
+            file(INSTALL DESTINATION \"\${CMAKE_INSTALL_PREFIX}/lib\" TYPE SHARED_LIBRARY FILES \${_ssl_so})
+        ")
+    endif()
+    # Crypto .so
+    if (CRYPTO_LIBRARY)
+        get_filename_component(CRYPTO_LIB_DIR ${CRYPTO_LIBRARY} DIRECTORY)
+        install(CODE "
+            file(GLOB _crypto_so \"${CRYPTO_LIB_DIR}/libcrypto.so*\")
+            file(INSTALL DESTINATION \"\${CMAKE_INSTALL_PREFIX}/lib\" TYPE SHARED_LIBRARY FILES \${_crypto_so})
+        ")
+    endif()
+    # RGA 运行时 .so
+    get_filename_component(RGA_LIB_DIR ${LIBRGA} DIRECTORY)
+    install(CODE "
+        file(GLOB _rga_so \"${RGA_LIB_DIR}/librga.so*\")
+        file(INSTALL DESTINATION \"\${CMAKE_INSTALL_PREFIX}/lib\" TYPE SHARED_LIBRARY FILES \${_rga_so})
+    ")
+
+    # mediamtx (RTMP→WebRTC 流媒体服务器, 静态链接 Go 二进制)
+    # CMAKE_SOURCE_DIR 是 examples/yolov8/cpp, 所以向上 3 级找项目根
+    get_filename_component(PROJ_ROOT "${CMAKE_SOURCE_DIR}/../../.." ABSOLUTE)
+    if (EXISTS ${PROJ_ROOT}/mediamtx)
+        install(PROGRAMS ${PROJ_ROOT}/mediamtx DESTINATION .)
+        message(STATUS "mediamtx: will be installed from ${PROJ_ROOT}/mediamtx")
+    else()
+        message(STATUS "mediamtx: not found at ${PROJ_ROOT}/mediamtx (skip)")
     endif()
 endif()
 
@@ -292,6 +343,13 @@ target_include_directories(${PROJECT_NAME}_stream PRIVATE
 install(TARGETS ${PROJECT_NAME}_stream DESTINATION .)
 
 install(TARGETS ${PROJECT_NAME} DESTINATION .)
+
+# 安装启动脚本 (设置 LD_LIBRARY_PATH, 解决 OpenCV .so 残留构建路径 RUNPATH 的问题)
+get_filename_component(PROJ_ROOT2 "${CMAKE_SOURCE_DIR}/../../.." ABSOLUTE)
+if (EXISTS ${PROJ_ROOT2}/run.sh)
+    install(PROGRAMS ${PROJ_ROOT2}/run.sh DESTINATION .)
+endif()
+
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../model/bus.jpg DESTINATION model)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../model/coco_80_labels_list.txt DESTINATION model)
 file(GLOB RKNN_FILES "${CMAKE_CURRENT_SOURCE_DIR}/../model/*.rknn")

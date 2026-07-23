@@ -1,5 +1,6 @@
 // RTMP 推流实现: MPP 硬件 H.264 编码 + librtmp 推流
 // 异步架构: 检测线程 submit() swap Mat 就返回, 编码+发送在独立 sender 线程
+// RGB→NV12 优先走 RGA 硬件加速, 失败时回退 CPU
 
 #include "rtmp_sink.h"
 
@@ -14,6 +15,10 @@ extern "C" {
 #include <librtmp/rtmp.h>
 #include <librtmp/log.h>
 }
+
+// RGA 硬件加速 (RGB→NV12 色彩空间转换)
+#include "im2d.h"
+#include "rga.h"
 
 // =====================================================================
 // 构造 / 析构
@@ -81,6 +86,43 @@ int RtmpSink::rgb_to_nv12(const unsigned char *rgb, int src_w, int src_h,
         }
     }
     return 0;
+}
+
+// =====================================================================
+// RGA 硬件加速: RGB888 → NV12 色彩空间转换
+// RGA 是 Rockchip 2D 硬件加速器, 可在 DMA 上直接做色彩转换和缩放,
+// 省 CPU ~1-2ms/帧 (640x480). MPP DMA buffer 预导入缓存 (rga_dst_handle_).
+// 失败时返回 false, 调用方回退 CPU rgb_to_nv12().
+// =====================================================================
+bool RtmpSink::try_rga_rgb_to_nv12(const cv::Mat &rgb)
+{
+    if (rga_dst_handle_ == 0) return false;       // MPP buffer 未导入 RGA
+    if (!rgb.isContinuous())   return false;       // 非连续 Mat 不支持
+
+    int src_w = rgb.cols;
+    int src_h = rgb.rows;
+
+    // 导入 RGB 虚拟地址到 RGA (每帧导入, 因为 Mat 地址可能变)
+    rga_buffer_handle_t src_handle = importbuffer_virtualaddr(
+        (void *)rgb.data, src_w, src_h, RK_FORMAT_RGB_888);
+    if (src_handle == 0) return false;
+
+    rga_buffer_t src_img = wrapbuffer_handle(src_handle, src_w, src_h, RK_FORMAT_RGB_888);
+    rga_buffer_t dst_img = wrapbuffer_handle(rga_dst_handle_, enc_width_, enc_height_,
+                                             RK_FORMAT_YCbCr_420_SP);
+
+    // RGA 同时做色彩转换 + 缩放 (若 src != enc 尺寸)
+    IM_STATUS status = imcvtcolor(src_img, dst_img,
+                                  RK_FORMAT_RGB_888, RK_FORMAT_YCbCr_420_SP);
+
+    releasebuffer_handle(src_handle);
+
+    if (status != IM_STATUS_SUCCESS)
+    {
+        printf("[rtmp] RGA imcvtcolor failed (%d), fall back to CPU\n", status);
+        return false;
+    }
+    return true;
 }
 
 // =====================================================================
@@ -190,6 +232,19 @@ int RtmpSink::init_mpp(int width, int height, int fps, int bitrate_kbps)
     mpp_frame_set_buffer(enc_frame_, enc_buf_);
 
     mpp_inited_ = true;
+
+    // 预导入 MPP DMA buffer 到 RGA (缓存 handle, 避免每帧 importbuffer_fd)
+    int dst_fd = mpp_buffer_get_fd(enc_buf_);
+    if (dst_fd >= 0)
+    {
+        rga_dst_handle_ = importbuffer_fd(dst_fd, enc_width_, enc_height_,
+                                          RK_FORMAT_YCbCr_420_SP);
+        if (rga_dst_handle_ == 0)
+            printf("[rtmp] RGA importbuffer_fd(enc_buf) failed, will use CPU for RGB→NV12\n");
+        else
+            printf("[rtmp] RGA acceleration enabled (RGB→NV12 hardware)\n");
+    }
+
     printf("[rtmp] MPP encoder inited: %dx%d@%dfps %dkbps CBR\n",
            enc_width_, enc_height_, enc_fps_, enc_bitrate_);
     return 0;
@@ -197,6 +252,13 @@ int RtmpSink::init_mpp(int width, int height, int fps, int bitrate_kbps)
 
 void RtmpSink::deinit_mpp()
 {
+    // 释放 RGA 缓存 handle
+    if (rga_dst_handle_ != 0)
+    {
+        releasebuffer_handle(rga_dst_handle_);
+        rga_dst_handle_ = 0;
+    }
+
     // 先释放预分配的帧 (内部会 mpp_buffer_put, 但 enc_buf_ 有自己的引用)
     if (enc_frame_)
     {
@@ -426,14 +488,18 @@ int RtmpSink::encode_and_send(const cv::Mat &rgb)
     int src_w = rgb.cols;
     int src_h = rgb.rows;
 
-    // RGB → NV12, 直接写入 MPP DMA 缓冲 (省掉中间 nv12_buf_ 和一次 memcpy)
-    void *frm_ptr = mpp_buffer_get_ptr(enc_buf_);
-    if (!frm_ptr)
+    // RGB → NV12: 优先 RGA 硬件加速, 失败时回退 CPU
+    if (!try_rga_rgb_to_nv12(rgb))
     {
-        printf("[rtmp] mpp_buffer_get_ptr(enc_buf) failed\n");
-        return -1;
+        // CPU 回退: 直接写入 MPP DMA 缓冲
+        void *frm_ptr = mpp_buffer_get_ptr(enc_buf_);
+        if (!frm_ptr)
+        {
+            printf("[rtmp] mpp_buffer_get_ptr(enc_buf) failed\n");
+            return -1;
+        }
+        rgb_to_nv12(rgb.data, src_w, src_h, (unsigned char *)frm_ptr, enc_width_, enc_height_);
     }
-    rgb_to_nv12(rgb.data, src_w, src_h, (unsigned char *)frm_ptr, enc_width_, enc_height_);
 
     // 更新帧时间戳 (其他参数在 init_mpp 中已设置, 不变)
     struct timeval tv;

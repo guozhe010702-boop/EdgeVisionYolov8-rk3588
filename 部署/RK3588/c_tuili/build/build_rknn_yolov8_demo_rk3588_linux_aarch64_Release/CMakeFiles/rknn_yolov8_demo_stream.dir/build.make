@@ -125,24 +125,10 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/mjpeg_http_sink.cc.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/rknn_yolov8_demo_stream.dir/mjpeg_http_sink.cc.s"
 	/usr/bin/aarch64-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/mjpeg_http_sink.cc -o CMakeFiles/rknn_yolov8_demo_stream.dir/mjpeg_http_sink.cc.s
 
-CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o: CMakeFiles/rknn_yolov8_demo_stream.dir/flags.make
-CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o: /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/rtmp_sink.cc
-CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o: CMakeFiles/rknn_yolov8_demo_stream.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/orangepi/rknn_model_zoo-2.3.0/build/build_rknn_yolov8_demo_rk3588_linux_aarch64_Release/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o"
-	/usr/bin/aarch64-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o -MF CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o.d -o CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o -c /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/rtmp_sink.cc
-
-CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.i"
-	/usr/bin/aarch64-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/rtmp_sink.cc > CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.i
-
-CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.s"
-	/usr/bin/aarch64-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/rtmp_sink.cc -o CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.s
-
 CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.o: CMakeFiles/rknn_yolov8_demo_stream.dir/flags.make
 CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.o: /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/rknpu2/yolov8_zero_copy.cc
 CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.o: CMakeFiles/rknn_yolov8_demo_stream.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/orangepi/rknn_model_zoo-2.3.0/build/build_rknn_yolov8_demo_rk3588_linux_aarch64_Release/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/orangepi/rknn_model_zoo-2.3.0/build/build_rknn_yolov8_demo_rk3588_linux_aarch64_Release/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.o"
 	/usr/bin/aarch64-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.o -MF CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.o.d -o CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.o -c /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/rknpu2/yolov8_zero_copy.cc
 
 CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.i: cmake_force
@@ -153,14 +139,28 @@ CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.s"
 	/usr/bin/aarch64-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/rknpu2/yolov8_zero_copy.cc -o CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.s
 
+CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o: CMakeFiles/rknn_yolov8_demo_stream.dir/flags.make
+CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o: /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/rtmp_sink.cc
+CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o: CMakeFiles/rknn_yolov8_demo_stream.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/orangepi/rknn_model_zoo-2.3.0/build/build_rknn_yolov8_demo_rk3588_linux_aarch64_Release/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o"
+	/usr/bin/aarch64-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o -MF CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o.d -o CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o -c /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/rtmp_sink.cc
+
+CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.i"
+	/usr/bin/aarch64-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/rtmp_sink.cc > CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.i
+
+CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.s"
+	/usr/bin/aarch64-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/rtmp_sink.cc -o CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.s
+
 # Object files for target rknn_yolov8_demo_stream
 rknn_yolov8_demo_stream_OBJECTS = \
 "CMakeFiles/rknn_yolov8_demo_stream.dir/main_stream.cc.o" \
 "CMakeFiles/rknn_yolov8_demo_stream.dir/postprocess.cc.o" \
 "CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o" \
 "CMakeFiles/rknn_yolov8_demo_stream.dir/mjpeg_http_sink.cc.o" \
-"CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o" \
-"CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.o"
+"CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.o" \
+"CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o"
 
 # External object files for target rknn_yolov8_demo_stream
 rknn_yolov8_demo_stream_EXTERNAL_OBJECTS =
@@ -169,20 +169,18 @@ rknn_yolov8_demo_stream: CMakeFiles/rknn_yolov8_demo_stream.dir/main_stream.cc.o
 rknn_yolov8_demo_stream: CMakeFiles/rknn_yolov8_demo_stream.dir/postprocess.cc.o
 rknn_yolov8_demo_stream: CMakeFiles/rknn_yolov8_demo_stream.dir/v4l2_capture.cc.o
 rknn_yolov8_demo_stream: CMakeFiles/rknn_yolov8_demo_stream.dir/mjpeg_http_sink.cc.o
-rknn_yolov8_demo_stream: CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o
 rknn_yolov8_demo_stream: CMakeFiles/rknn_yolov8_demo_stream.dir/rknpu2/yolov8_zero_copy.cc.o
+rknn_yolov8_demo_stream: CMakeFiles/rknn_yolov8_demo_stream.dir/rtmp_sink.cc.o
 rknn_yolov8_demo_stream: CMakeFiles/rknn_yolov8_demo_stream.dir/build.make
 rknn_yolov8_demo_stream: utils.out/libimageutils.a
 rknn_yolov8_demo_stream: utils.out/libfileutils.a
 rknn_yolov8_demo_stream: utils.out/libimagedrawing.a
+rknn_yolov8_demo_stream: /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/rknpu2/Linux/aarch64/librknnrt.so
 rknn_yolov8_demo_stream: /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/lib/libopencv_core.so
 rknn_yolov8_demo_stream: /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/lib/libopencv_imgproc.so
-rknn_yolov8_demo_stream: /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/lib/libopencv_imgcodecs.so
-rknn_yolov8_demo_stream: /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/lib/libopencv_videoio.so
-rknn_yolov8_demo_stream: /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/opencv-3.4.5/install/lib/libopencv_highgui.so
-rknn_yolov8_demo_stream: /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/rknpu2/Linux/aarch64/librknnrt.so
 rknn_yolov8_demo_stream: /usr/lib/aarch64-linux-gnu/librockchip_mpp.so
 rknn_yolov8_demo_stream: /usr/lib/aarch64-linux-gnu/librtmp.so
+rknn_yolov8_demo_stream: /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/Linux/aarch64/librga.a
 rknn_yolov8_demo_stream: /home/orangepi/rknn_model_zoo-2.3.0/examples/yolov8/cpp/../../../3rdparty/jpeg_turbo/Linux/aarch64/libturbojpeg.a
 rknn_yolov8_demo_stream: /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/jpeg_turbo/Linux/aarch64/libturbojpeg.a
 rknn_yolov8_demo_stream: /home/orangepi/rknn_model_zoo-2.3.0/3rdparty/librga/Linux/aarch64/librga.a

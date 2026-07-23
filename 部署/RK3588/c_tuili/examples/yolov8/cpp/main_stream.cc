@@ -25,7 +25,10 @@
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/core.hpp>
+#ifndef HEADLESS
 #include <opencv2/highgui.hpp>
+#include <opencv2/videoio.hpp>
+#endif
 
 #include "yolov8.h"
 #include "image_utils.h"
@@ -33,7 +36,16 @@
 #include "image_drawing.h"
 #include "v4l2_capture.h"
 #include "mjpeg_http_sink.h"
+#ifdef HAVE_MPP_RTMP
 #include "rtmp_sink.h"
+#endif
+
+// RTMP 推流能力: 编译期决定
+#ifdef HAVE_MPP_RTMP
+#define RTMP_AVAILABLE 1
+#else
+#define RTMP_AVAILABLE 0
+#endif
 
 #if defined(RV1106_1103)
     #include "dma_alloc.hpp"
@@ -51,10 +63,14 @@ static void on_sigint(int signo)
         实时视频检测 (摄像头)
         用法: ./rknn_yolov8_demo_stream <model_path> <camera_id|device_path>
                                     [width] [height] [fps] [save_path] [push_port|rtmp_url]
-        示例: ./rknn_yolov8_demo_stream model/best.rknn 0
+        示例 (USB 摄像头):
+              ./rknn_yolov8_demo_stream model/best.rknn 0
               ./rknn_yolov8_demo_stream model/best.rknn /dev/video0 1280 720 30 out.mp4
               ./rknn_yolov8_demo_stream model/best.rknn /dev/video0 0 0 0 "" 8080
               ./rknn_yolov8_demo_stream model/best.rknn /dev/video0 0 0 0 "" rtmp://127.0.0.1:1935/live/stream
+        示例 (MIPI OV13855, 需要 opi5max-cam0 overlay):
+              ./rknn_yolov8_demo_stream model/best.rknn /dev/video-camera0 0 0 0 "" 8080
+              ./rknn_yolov8_demo_stream model/best.rknn /dev/video11 0 0 0 "" rtmp://127.0.0.1:1936/live/stream
         按 'q' 退出预览
 -------------------------------------------*/
 static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
@@ -63,8 +79,13 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
                              const char *save_path,
                              int show_window,
                              MjpegHttpSink *mjpeg_sink,
-                             RtmpSink *rtmp_sink)
+                             void *rtmp_sink_raw)
 {
+#ifdef HAVE_MPP_RTMP
+    RtmpSink *rtmp_sink = static_cast<RtmpSink *>(rtmp_sink_raw);
+#else
+    (void)rtmp_sink_raw;
+#endif
     V4L2Capture cap;
     if (cap.open(source, req_w, req_h, req_fps) != 0)
     {
@@ -74,8 +95,9 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
     int frame_w   = cap.width();
     int frame_h   = cap.height();
     double fps    = cap.fps();
-    if (fps <= 0) fps = 25.0;
+    if (fps <= 0) fps = 30.0;  // RKISP 等设备可能不支持帧率查询, 默认 30
 
+#ifndef HEADLESS
     cv::VideoWriter writer;
     int save_enabled = (save_path != NULL && save_path[0] != '\0');
     if (save_enabled)
@@ -99,24 +121,40 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
     {
         cv::namedWindow("yolov8_stream", cv::WINDOW_AUTOSIZE);
     }
+#else
+    // HEADLESS 模式: 无 VideoWriter, 无预览窗口
+    int save_enabled = 0;
+    if (save_path != NULL && save_path[0] != '\0')
+    {
+        printf("HEADLESS mode: video recording disabled (no OpenCV videoio)\n");
+    }
+    show_window = 0;
+#endif
 
     // ==================== 优化: 预分配复用 Mat ====================
     // 整段循环共用 3 个 Mat, 避免每帧 new/delete / 重新分配
     cv::Mat rgb_frame;  // V4L2 直出 RGB (TJPF_RGB), 同时也是绘制画布
-    cv::Mat bgr_for_save, bgr_for_show;
+    cv::Mat bgr_for_save;
+#ifndef HEADLESS
+    cv::Mat bgr_for_show;
+#endif
     if (save_enabled || show_window)
     {
         bgr_for_save.create(frame_h, frame_w, CV_8UC3);
     }
+#ifndef HEADLESS
     if (show_window)
     {
         bgr_for_show.create(frame_h, frame_w, CV_8UC3);
     }
+#endif
 
     int frame_index = 0;
     int ret = 0;
     bool loop = true;
     int  v4l2_fail_streak = 0;  // 连续 V4L2 失败计数, 短暂抖动不退出
+    const int v4l2_retry_us = 33000;  // 重试间隔 ~33ms
+    const int v4l2_max_fail_time_us = 2000000;  // 连续失败 2 秒才真退出
 
     while (loop)
     {
@@ -128,24 +166,27 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
         }
 
         // RTMP 发送失败 (连接断开): 自动退出, 不浪费 CPU
+#ifdef HAVE_MPP_RTMP
         if (rtmp_sink != nullptr && rtmp_sink->sendFailed())
         {
             printf("RTMP connection lost, stopping stream...\n");
             break;
         }
+#endif
 
         if (cap.read(rgb_frame) != 0 || rgb_frame.empty())
         {
             // V4L2 偶发抽风 (驱动插入非 JPEG 状态字节, USB 抖动等);
-            // 短暂 sleep 后重试, 连续失败 1s 才真退出
+            // 短暂 sleep 后重试, 连续失败 2s 才真退出 (不依赖帧率)
             v4l2_fail_streak++;
-            if (v4l2_fail_streak >= 30)  // ~1s @30fps
+            if (v4l2_fail_streak * v4l2_retry_us >= v4l2_max_fail_time_us)
             {
-                printf("read frame fail %d times in a row, give up.\n", v4l2_fail_streak);
+                printf("read frame fail %d times (%dms), give up.\n",
+                       v4l2_fail_streak, v4l2_fail_streak * v4l2_retry_us / 1000);
                 break;
             }
             printf("[v4l2] read fail (%d), retry...\n", v4l2_fail_streak);
-            usleep(33000);
+            usleep(v4l2_retry_us);
             continue;
         }
         v4l2_fail_streak = 0;
@@ -215,30 +256,35 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
             draw_text(&src_image, text, x1, (y1 - 20 > 0 ? y1 - 20 : 0), COLOR_RED, 10);
         }
 
-        if (frame_index % 30 == 0)
+        if (frame_index % (fps > 0 ? (int)fps : 30) == 0)
         {
             printf("frame %d done, %d objects detected\n", frame_index, od_results.count);
         }
 
-        // 显示 (RGB -> BGR 给 highgui 看)
-        if (show_window)
-        {
-            cv::cvtColor(rgb_frame, bgr_for_show, cv::COLOR_RGB2BGR);
-            cv::imshow("yolov8_stream", bgr_for_show);
-            int key = cv::waitKey(1);
-            if (key == 'q' || key == 'Q' || key == 27 /* ESC */)
-            {
-                printf("user quit\n");
-                loop = false;
-            }
-        }
-
-        // 保存到文件 (MP4 需要 BGR, 复用 bgr_for_save)
-        if (save_enabled && writer.isOpened())
+        // 显示 + 保存: RGB→BGR 只做一次, 两处复用 (HEADLESS 模式下 show_window/save_enabled 均为 0, 此块不执行)
+#ifndef HEADLESS
+        if (show_window || (save_enabled && writer.isOpened()))
         {
             cv::cvtColor(rgb_frame, bgr_for_save, cv::COLOR_RGB2BGR);
-            writer.write(bgr_for_save);
+
+            if (show_window)
+            {
+                bgr_for_show = bgr_for_save;  // 浅拷贝 (共享数据, 零开销)
+                cv::imshow("yolov8_stream", bgr_for_show);
+                int key = cv::waitKey(1);
+                if (key == 'q' || key == 'Q' || key == 27 /* ESC */)
+                {
+                    printf("user quit\n");
+                    loop = false;
+                }
+            }
+
+            if (save_enabled && writer.isOpened())
+            {
+                writer.write(bgr_for_save);
+            }
         }
+#endif
 
         // ==================== 优化: 异步推流 ====================
         // submit() 只 swap 一次 Mat 句柄就返回, 编码发送在独立 sender 线程
@@ -247,17 +293,21 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
         {
             mjpeg_sink->submit(rgb_frame, 80);
         }
+#ifdef HAVE_MPP_RTMP
         if (rtmp_sink != nullptr)
         {
             rtmp_sink->submit(rgb_frame);
         }
+#endif
 
         frame_index++;
     }
 
     printf("stream done, total frames=%d\n", frame_index);
+#ifndef HEADLESS
     if (show_window) cv::destroyAllWindows();
     if (save_enabled && writer.isOpened()) writer.release();
+#endif
     return ret;
 }
 
@@ -284,9 +334,12 @@ int main(int argc, char **argv)
 
     const char *model_path = argv[1];
     const char *source     = argv[2];
-    int req_w  = (argc >= 4) ? atoi(argv[3]) : 0;
-    int req_h  = (argc >= 5) ? atoi(argv[4]) : 0;
-    int req_fps= (argc >= 6) ? atoi(argv[5]) : 0;
+
+    // 参数校验: width/height/fps 必须为非负整数
+    int req_w  = 0, req_h = 0, req_fps = 0;
+    if (argc >= 4) { req_w  = atoi(argv[3]); if (req_w < 0) req_w = 0; }
+    if (argc >= 5) { req_h  = atoi(argv[4]); if (req_h < 0) req_h = 0; }
+    if (argc >= 6) { req_fps= atoi(argv[5]); if (req_fps< 0) req_fps= 0; }
     const char *save_path = (argc >= 7) ? argv[6] : NULL;
     const char *push_arg  = (argc >= 8) ? argv[7] : NULL;
 
@@ -314,16 +367,19 @@ int main(int argc, char **argv)
 
     // 推流: 根据 push_arg 判断是 MJPEG (纯数字端口) 还是 RTMP (rtmp:// URL)
     MjpegHttpSink *mjpeg_sink = nullptr;
+#ifdef HAVE_MPP_RTMP
     RtmpSink      *rtmp_sink  = nullptr;
+#else
+    void          *rtmp_sink  = nullptr;
+#endif
 
     if (push_arg != NULL && push_arg[0] != '\0')
     {
         if (strncmp(push_arg, "rtmp://", 7) == 0)
         {
+#ifdef HAVE_MPP_RTMP
             // RTMP 推流模式 (H.264 + mediamtx/WebRTC)
             rtmp_sink = new RtmpSink();
-            // 先打开摄像头获取实际分辨率和帧率, 再初始化编码器
-            // 这里先用请求参数, 后面 cap.open 后会拿到实际值
             if (rtmp_sink->open(push_arg,
                                 req_w > 0 ? req_w : 640,
                                 req_h > 0 ? req_h : 480,
@@ -333,6 +389,10 @@ int main(int argc, char **argv)
                 delete rtmp_sink;
                 rtmp_sink = nullptr;
             }
+#else
+            printf("RTMP streaming not available (compiled without MPP/librtmp support)\n");
+            printf("Install librockchip-mpp-dev and librtmp-dev, then recompile.\n");
+#endif
         }
         else
         {
@@ -362,7 +422,9 @@ int main(int argc, char **argv)
         printf("init_yolov8_model fail! ret=%d model_path=%s\n", ret, model_path);
         deinit_post_process();
         if (mjpeg_sink) { mjpeg_sink->stop(); delete mjpeg_sink; }
+#ifdef HAVE_MPP_RTMP
         if (rtmp_sink)  { rtmp_sink->close(); delete rtmp_sink; }
+#endif
         return -1;
     }
 
@@ -377,10 +439,12 @@ int main(int argc, char **argv)
         mjpeg_sink->stop();
         delete mjpeg_sink;
     }
+#ifdef HAVE_MPP_RTMP
     if (rtmp_sink)
     {
         rtmp_sink->close();
         delete rtmp_sink;
     }
+#endif
     return ret;
 }

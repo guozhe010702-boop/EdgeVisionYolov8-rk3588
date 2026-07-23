@@ -1,5 +1,6 @@
-// 直接 V4L2 摄像头采集, 绕过 OpenCV videoio 和 libv4l2 兼容层
-// MJPG 用 libturbojpeg 解码, YUYV 手动转 BGR
+// 直接 V4L2 摄像头采集, 绕过 OpenCV 的 videoio 和系统的 libv4l2
+// MJPG 用 libturbojpeg 解码, YUYV/UYVY/NV12 用 OpenCV cvtColor 转 RGB
+// 支持 Single-planar (USB 摄像头) 和 Multi-planar (MIPI RKISP 摄像头)
 
 #include "v4l2_capture.h"
 
@@ -8,6 +9,7 @@
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -32,8 +34,11 @@ void V4L2Capture::close()
         {
             for (int i = 0; i < n_buffers_; i++)
             {
-                if (buffers_[i].start)
-                    munmap(buffers_[i].start, buffers_[i].length);
+                for (int p = 0; p < 2; p++)
+                {
+                    if (buffers_[i].start[p])
+                        munmap(buffers_[i].start[p], buffers_[i].length[p]);
+                }
             }
             free(buffers_);
             buffers_ = nullptr;
@@ -52,43 +57,82 @@ int V4L2Capture::try_format(unsigned int pixfmt, const char *name, int w, int h,
 {
     struct v4l2_format fmt;
     CLEAR(fmt);
-    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    fmt.fmt.pix.width       = (unsigned)w;
-    fmt.fmt.pix.height      = (unsigned)h;
-    fmt.fmt.pix.pixelformat = pixfmt;
-    fmt.fmt.pix.field       = V4L2_FIELD_NONE;
 
-    if (ioctl(fd_, VIDIOC_S_FMT, &fmt) < 0)
+    if (multiplanar_)
     {
-        printf("[v4l2] VIDIOC_S_FMT(%s) failed: %s\n", name, strerror(errno));
-        return -1;
+        fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        fmt.fmt.pix_mp.width       = (unsigned)w;
+        fmt.fmt.pix_mp.height      = (unsigned)h;
+        fmt.fmt.pix_mp.pixelformat = pixfmt;
+        fmt.fmt.pix_mp.field       = V4L2_FIELD_NONE;
+
+        if (ioctl(fd_, VIDIOC_S_FMT, &fmt) < 0)
+        {
+            printf("[v4l2] VIDIOC_S_FMT(%s, MPLANE) failed: %s (errno=%d)\n",
+                   name, strerror(errno), errno);
+            return -1;
+        }
+
+        if (fmt.fmt.pix_mp.pixelformat != pixfmt)
+        {
+            printf("[v4l2] driver did not accept %s (got 0x%08x), try next\n",
+                   name, fmt.fmt.pix_mp.pixelformat);
+            return -1;
+        }
+
+        printf("[v4l2] S_FMT(%s, MPLANE) OK: %dx%d, %d plane(s)\n",
+               name, (int)fmt.fmt.pix_mp.width, (int)fmt.fmt.pix_mp.height,
+               (int)fmt.fmt.pix_mp.num_planes);
+
+        width_  = (int)fmt.fmt.pix_mp.width;
+        height_ = (int)fmt.fmt.pix_mp.height;
+        n_planes_ = (int)fmt.fmt.pix_mp.num_planes;
+        bytesperline_ = (int)fmt.fmt.pix_mp.plane_fmt[0].bytesperline;
+        if (bytesperline_ <= 0) bytesperline_ = width_;
+        pixfmt_ = fmt.fmt.pix_mp.pixelformat;
+    }
+    else
+    {
+        fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        fmt.fmt.pix.width       = (unsigned)w;
+        fmt.fmt.pix.height      = (unsigned)h;
+        fmt.fmt.pix.pixelformat = pixfmt;
+        fmt.fmt.pix.field       = V4L2_FIELD_NONE;
+
+        if (ioctl(fd_, VIDIOC_S_FMT, &fmt) < 0)
+        {
+            printf("[v4l2] VIDIOC_S_FMT(%s) failed: %s\n", name, strerror(errno));
+            return -1;
+        }
+
+        if (fmt.fmt.pix.pixelformat != pixfmt)
+        {
+            printf("[v4l2] driver did not accept %s (got 0x%08x), try next\n",
+                   name, fmt.fmt.pix.pixelformat);
+            return -1;
+        }
+
+        width_  = (int)fmt.fmt.pix.width;
+        height_ = (int)fmt.fmt.pix.height;
+        n_planes_ = 1;
+        bytesperline_ = (int)fmt.fmt.pix.bytesperline;
+        if (bytesperline_ <= 0) bytesperline_ = width_ * 2;  // YUYV 安全兜底
+        pixfmt_ = fmt.fmt.pix.pixelformat;
     }
 
-    // 驱动可能悄悄改成别的格式 (e.g. 走 libv4l2 fallback), 必须按实际格式走
-    if (fmt.fmt.pix.pixelformat != pixfmt)
-    {
-        printf("[v4l2] driver did not accept %s (got 0x%08x), try next\n",
-               name, fmt.fmt.pix.pixelformat);
-        return -1;
-    }
-
-    // 驱动可能调整了分辨率, 用回读的实际值
-    width_  = (int)fmt.fmt.pix.width;
-    height_ = (int)fmt.fmt.pix.height;
-    bytesperline_ = (int)fmt.fmt.pix.bytesperline;
-    if (bytesperline_ <= 0) bytesperline_ = width_ * 2;  // 安全兜底
-    pixfmt_ = fmt.fmt.pix.pixelformat;
     strncpy(format_name_, name, sizeof(format_name_) - 1);
 
     // 设帧率
     struct v4l2_streamparm parm;
     CLEAR(parm);
-    parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    parm.type = multiplanar_ ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE
+                              : V4L2_BUF_TYPE_VIDEO_CAPTURE;
     parm.parm.capture.timeperframe.numerator   = 1;
     parm.parm.capture.timeperframe.denominator = (unsigned)fps;
     if (ioctl(fd_, VIDIOC_S_PARM, &parm) < 0)
     {
-        // 帧率设置失败不致命, 读回实际帧率
+        // RKISP 等设备可能不支持帧率设置, 不致命
+        printf("[v4l2] VIDIOC_S_PARM failed: %s (fps will be reported as 0)\n", strerror(errno));
     }
     else
     {
@@ -101,15 +145,19 @@ int V4L2Capture::try_format(unsigned int pixfmt, const char *name, int w, int h,
 
 int V4L2Capture::init_mmap()
 {
+    enum v4l2_buf_type buf_type = multiplanar_
+        ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE
+        : V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
     struct v4l2_requestbuffers req;
     CLEAR(req);
     req.count  = 4;
-    req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.type   = buf_type;
     req.memory = V4L2_MEMORY_MMAP;
 
     if (ioctl(fd_, VIDIOC_REQBUFS, &req) < 0)
     {
-        printf("[v4l2] VIDIOC_REQBUFS failed: %s\n", strerror(errno));
+        printf("[v4l2] VIDIOC_REQBUFS failed: %s (type=%d)\n", strerror(errno), buf_type);
         return -1;
     }
     if (req.count < 2)
@@ -119,39 +167,88 @@ int V4L2Capture::init_mmap()
     }
 
     n_buffers_ = (int)req.count;
+    printf("[v4l2] REQBUFS: got %d buffers (type=%d)\n", n_buffers_, buf_type);
     buffers_ = (buffer *)calloc(n_buffers_, sizeof(buffer));
     if (!buffers_) return -1;
 
-    for (int i = 0; i < n_buffers_; i++)
+    if (multiplanar_)
     {
-        struct v4l2_buffer buf;
-        CLEAR(buf);
-        buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
-        buf.index  = (unsigned)i;
-        if (ioctl(fd_, VIDIOC_QUERYBUF, &buf) < 0)
+        // Multi-planar: 每个 buffer 有 n_planes_ 个平面, 分别 mmap
+        for (int i = 0; i < n_buffers_; i++)
         {
-            printf("[v4l2] QUERYBUF failed: %s\n", strerror(errno));
-            return -1;
+            struct v4l2_buffer buf;
+            struct v4l2_plane planes[2];
+            CLEAR(buf);
+            CLEAR(planes);
+            buf.type   = buf_type;
+            buf.memory = V4L2_MEMORY_MMAP;
+            buf.index  = (unsigned)i;
+            buf.m.planes = planes;
+            buf.length   = n_planes_;
+
+            if (ioctl(fd_, VIDIOC_QUERYBUF, &buf) < 0)
+            {
+                printf("[v4l2] QUERYBUF(MPLANE) failed: %s\n", strerror(errno));
+                return -1;
+            }
+
+            for (int p = 0; p < n_planes_; p++)
+            {
+                buffers_[i].length[p] = planes[p].length;
+                buffers_[i].start[p]  = mmap(NULL, planes[p].length,
+                                              PROT_READ | PROT_WRITE,
+                                              MAP_SHARED, fd_,
+                                              planes[p].m.mem_offset);
+                if (buffers_[i].start[p] == MAP_FAILED)
+                {
+                    printf("[v4l2] mmap plane %d failed: %s\n", p, strerror(errno));
+                    return -1;
+                }
+            }
         }
-        buffers_[i].length = buf.length;
-        buffers_[i].start  = mmap(NULL, buf.length,
-                                  PROT_READ | PROT_WRITE,
-                                  MAP_SHARED, fd_, buf.m.offset);
-        if (buffers_[i].start == MAP_FAILED)
+    }
+    else
+    {
+        // Single-planar: 和之前一样
+        for (int i = 0; i < n_buffers_; i++)
         {
-            printf("[v4l2] mmap failed: %s\n", strerror(errno));
-            return -1;
+            struct v4l2_buffer buf;
+            CLEAR(buf);
+            buf.type   = buf_type;
+            buf.memory = V4L2_MEMORY_MMAP;
+            buf.index  = (unsigned)i;
+            if (ioctl(fd_, VIDIOC_QUERYBUF, &buf) < 0)
+            {
+                printf("[v4l2] QUERYBUF failed: %s\n", strerror(errno));
+                return -1;
+            }
+            buffers_[i].length[0] = buf.length;
+            buffers_[i].start[0]  = mmap(NULL, buf.length,
+                                          PROT_READ | PROT_WRITE,
+                                          MAP_SHARED, fd_, buf.m.offset);
+            if (buffers_[i].start[0] == MAP_FAILED)
+            {
+                printf("[v4l2] mmap failed: %s\n", strerror(errno));
+                return -1;
+            }
         }
     }
 
+    // 入队所有 buffer
     for (int i = 0; i < n_buffers_; i++)
     {
         struct v4l2_buffer buf;
+        struct v4l2_plane planes[2];
         CLEAR(buf);
-        buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        CLEAR(planes);
+        buf.type   = buf_type;
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index  = (unsigned)i;
+        if (multiplanar_)
+        {
+            buf.m.planes = planes;
+            buf.length   = n_planes_;
+        }
         if (ioctl(fd_, VIDIOC_QBUF, &buf) < 0)
         {
             printf("[v4l2] QBUF failed: %s\n", strerror(errno));
@@ -163,22 +260,30 @@ int V4L2Capture::init_mmap()
 
 int V4L2Capture::start_streaming()
 {
-    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    enum v4l2_buf_type type = multiplanar_
+        ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE
+        : V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl(fd_, VIDIOC_STREAMON, &type) < 0)
     {
-        printf("[v4l2] STREAMON failed: %s\n", strerror(errno));
+        printf("[v4l2] STREAMON failed: %s (type=%d)\n", strerror(errno), type);
         return -1;
     }
+    printf("[v4l2] STREAMON OK (type=%d)\n", type);
     return 0;
 }
 
 int V4L2Capture::stop_streaming()
 {
-    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    enum v4l2_buf_type type = multiplanar_
+        ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE
+        : V4L2_BUF_TYPE_VIDEO_CAPTURE;
     ioctl(fd_, VIDIOC_STREAMOFF, &type);  // 失败也无所谓
     return 0;
 }
 
+// =====================================================================
+// MJPG 解码 (libturbojpeg → RGB)
+// =====================================================================
 void V4L2Capture::decode_mjpg(const void *data, size_t len, cv::Mat &out)
 {
     if (!tj_) tj_ = tjInitDecompress();
@@ -200,10 +305,8 @@ void V4L2Capture::decode_mjpg(const void *data, size_t len, cv::Mat &out)
     }
     (void)jcol;
 
-    // 优化: 直接解码到输出 Mat 的内存, 省掉 tj_buf_ 中间缓冲和 .clone() 拷贝
     if (jw == width_ && jh == height_)
     {
-        // 常见路径: JPEG 尺寸 == 采集尺寸, 直接解码到 out
         if (out.rows != height_ || out.cols != width_ || out.type() != CV_8UC3)
             out.create(height_, width_, CV_8UC3);
         if (tjDecompress2((tjhandle)tj_,
@@ -217,7 +320,6 @@ void V4L2Capture::decode_mjpg(const void *data, size_t len, cv::Mat &out)
     }
     else
     {
-        // 少见路径: JPEG 尺寸 != 采集尺寸, 需 resize
         cv::Mat tmp(jh, jw, CV_8UC3);
         if (tjDecompress2((tjhandle)tj_,
                           (unsigned char *)data, (unsigned long)len,
@@ -231,72 +333,16 @@ void V4L2Capture::decode_mjpg(const void *data, size_t len, cv::Mat &out)
     }
 }
 
-void V4L2Capture::convert_yuyv_to_bgr(const void *data, size_t len, cv::Mat &out)
-{
-    out.create(height_, width_, CV_8UC3);
-    const unsigned char *src = (const unsigned char *)data;
-    unsigned char *dst = out.data;
-    int stride = bytesperline_ > 0 ? bytesperline_ : width_ * 2;  // YUYV 每像素 2 字节
-    // 按 stride 计算, 不能用 width_*2 (驱动可能插入 padding)
-    if ((size_t)stride * (size_t)height_ > len) return;  // 缓冲不够, 放弃
 
-    for (int y = 0; y < height_; y++)
-    {
-        const unsigned char *row = src + y * stride;
-        unsigned char *drow = dst + y * width_ * 3;
-        int x = 0;
-        // 一次处理 2 像素 (YUYV macro-pixel)
-        for (; x + 1 < width_; x += 2)
-        {
-            int y0 = row[2*x + 0];
-            int u  = row[2*x + 1];
-            int y1 = row[2*x + 2];
-            int v  = row[2*x + 3];
 
-            // BT.601 full range
-            int c0 = y0 - 16;
-            int c1 = y1 - 16;
-            int d  = u  - 128;
-            int e  = v  - 128;
-
-            int b0 = (298 * c0 + 516 * d           ) >> 8;
-            int g0 = (298 * c0 - 100 * d - 208 * e ) >> 8;
-            int r0 = (298 * c0           + 409 * e ) >> 8;
-            int b1 = (298 * c1 + 516 * d           ) >> 8;
-            int g1 = (298 * c1 - 100 * d - 208 * e ) >> 8;
-            int r1 = (298 * c1           + 409 * e ) >> 8;
-
-            drow[3*x + 0] = (unsigned char)(b0 < 0 ? 0 : b0 > 255 ? 255 : b0);
-            drow[3*x + 1] = (unsigned char)(g0 < 0 ? 0 : g0 > 255 ? 255 : g0);
-            drow[3*x + 2] = (unsigned char)(r0 < 0 ? 0 : r0 > 255 ? 255 : r0);
-            drow[3*x + 3] = (unsigned char)(b1 < 0 ? 0 : b1 > 255 ? 255 : b1);
-            drow[3*x + 4] = (unsigned char)(g1 < 0 ? 0 : g1 > 255 ? 255 : g1);
-            drow[3*x + 5] = (unsigned char)(r1 < 0 ? 0 : r1 > 255 ? 255 : r1);
-        }
-        // 奇数宽度时, 单独处理最后一像素 (用前一个 U/V)
-        if (x < width_)
-        {
-            int y0 = row[2*x + 0];
-            int u  = row[2*x + 1];
-            int v  = row[2*x + 1];  // YUYV macro-pixel 的 U/V 共享
-            int c0 = y0 - 16;
-            int d  = u  - 128;
-            int e  = v  - 128;
-            int b0 = (298 * c0 + 516 * d           ) >> 8;
-            int g0 = (298 * c0 - 100 * d - 208 * e ) >> 8;
-            int r0 = (298 * c0           + 409 * e ) >> 8;
-            drow[3*x + 0] = (unsigned char)(b0 < 0 ? 0 : b0 > 255 ? 255 : b0);
-            drow[3*x + 1] = (unsigned char)(g0 < 0 ? 0 : g0 > 255 ? 255 : g0);
-            drow[3*x + 2] = (unsigned char)(r0 < 0 ? 0 : r0 > 255 ? 255 : r0);
-        }
-    }
-}
-
+// =====================================================================
+// 打开设备
+// =====================================================================
 int V4L2Capture::open(const char *dev, int req_w, int req_h, int req_fps)
 {
     close();
 
-    // 默认 640x480@30: 避免用户传 0 时摄像头退到最小分辨率 (如 160x120)
+    // 默认 640x480@30
     if (req_w  <= 0) req_w  = 640;
     if (req_h  <= 0) req_h  = 480;
     if (req_fps <= 0) req_fps = 30;
@@ -308,7 +354,7 @@ int V4L2Capture::open(const char *dev, int req_w, int req_h, int req_fps)
         return -1;
     }
 
-    // 验证是 V4L2 capture 设备
+    // 验证是 V4L2 capture 设备 (同时接受 Single-planar 和 Multi-planar)
     struct v4l2_capability cap;
     if (ioctl(fd_, VIDIOC_QUERYCAP, &cap) < 0)
     {
@@ -316,12 +362,26 @@ int V4L2Capture::open(const char *dev, int req_w, int req_h, int req_fps)
         close();
         return -1;
     }
-    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE))
+
+    if (cap.capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE)
     {
-        printf("[v4l2] %s is not a V4L2 capture device\n", dev);
+        multiplanar_ = true;
+        printf("[v4l2] %s: Multi-planar capture device\n", dev);
+    }
+    else if (cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)
+    {
+        multiplanar_ = false;
+        printf("[v4l2] %s: Single-planar capture device\n", dev);
+    }
+    else
+    {
+        printf("[v4l2] %s is not a V4L2 capture device "
+               "(capabilities=0x%08x, need CAPTURE or CAPTURE_MPLANE)\n",
+               dev, cap.capabilities);
         close();
         return -1;
     }
+
     if (!(cap.capabilities & V4L2_CAP_STREAMING))
     {
         printf("[v4l2] %s does not support streaming I/O\n", dev);
@@ -329,9 +389,23 @@ int V4L2Capture::open(const char *dev, int req_w, int req_h, int req_fps)
         return -1;
     }
 
-    // 优先 MJPG, 失败回退 YUYV
-    if (try_format(V4L2_PIX_FMT_MJPEG, "MJPG", req_w, req_h, req_fps) != 0 &&
-        try_format(V4L2_PIX_FMT_YUYV,  "YUYV", req_w, req_h, req_fps) != 0)
+    // 格式优先级: MJPG → NV12 → YUYV → UYVY
+    // USB 摄像头会命中 MJPG; MIPI RKISP 会命中 NV12
+    int fmt_ok = -1;
+    if ((fmt_ok = try_format(V4L2_PIX_FMT_MJPEG, "MJPG", req_w, req_h, req_fps)) != 0)
+    {
+        printf("[v4l2] MJPG not available, trying NV12...\n");
+        if ((fmt_ok = try_format(V4L2_PIX_FMT_NV12,  "NV12", req_w, req_h, req_fps)) != 0)
+        {
+            printf("[v4l2] NV12 not available, trying YUYV...\n");
+            if ((fmt_ok = try_format(V4L2_PIX_FMT_YUYV,  "YUYV", req_w, req_h, req_fps)) != 0)
+            {
+                printf("[v4l2] YUYV not available, trying UYVY...\n");
+                fmt_ok = try_format(V4L2_PIX_FMT_UYVY,  "UYVY", req_w, req_h, req_fps);
+            }
+        }
+    }
+    if (fmt_ok != 0)
     {
         printf("[v4l2] no supported pixel format on %s\n", dev);
         close();
@@ -349,43 +423,127 @@ int V4L2Capture::open(const char *dev, int req_w, int req_h, int req_fps)
         return -1;
     }
 
-    printf("[v4l2] opened %s, %dx%d %s @ %d fps\n",
-           dev, width_, height_, format_name_, fps_);
+    printf("[v4l2] opened %s, %dx%d %s @ %d fps (%s, %d plane%s)\n",
+           dev, width_, height_, format_name_, fps_,
+           multiplanar_ ? "MPLANE" : "SPLANE",
+           n_planes_, n_planes_ > 1 ? "s" : "");
     return 0;
 }
 
+// =====================================================================
+// 读取一帧
+// =====================================================================
 int V4L2Capture::read(cv::Mat &frame)
 {
     if (fd_ < 0) return -1;
 
-    fd_set fds;
-    FD_ZERO(&fds);
-    FD_SET(fd_, &fds);
-    struct timeval tv = {2, 0};  // 2s 超时
-    int r = select(fd_ + 1, &fds, NULL, NULL, &tv);
+    // poll 比 select 更轻量 (单 fd 无需 FD_SET 宏)
+    struct pollfd pfd = {fd_, POLLIN, 0};
+    int r = poll(&pfd, 1, 2000);  // 2s 超时
     if (r <= 0)
     {
-        printf("[v4l2] select timeout\n");
+        printf("[v4l2] poll timeout or error\n");
         return -1;
     }
 
+    enum v4l2_buf_type buf_type = multiplanar_
+        ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE
+        : V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
     struct v4l2_buffer buf;
+    struct v4l2_plane planes[2];
     CLEAR(buf);
-    buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    CLEAR(planes);
+    buf.type   = buf_type;
     buf.memory = V4L2_MEMORY_MMAP;
+    if (multiplanar_)
+    {
+        buf.m.planes = planes;
+        buf.length   = n_planes_;
+    }
+
     if (ioctl(fd_, VIDIOC_DQBUF, &buf) < 0)
     {
         printf("[v4l2] DQBUF failed: %s\n", strerror(errno));
         return -1;
     }
 
+    // 按格式解码 (OpenCV cvtColor 内部有 NEON/SSE 优化, 比手写循环快)
     if (pixfmt_ == V4L2_PIX_FMT_MJPEG)
-        decode_mjpg(buffers_[buf.index].start, buf.bytesused, frame);
-    else if (pixfmt_ == V4L2_PIX_FMT_YUYV)
-        convert_yuyv_to_bgr(buffers_[buf.index].start, buf.bytesused, frame);
-    else
-        frame = cv::Mat();
+    {
+        size_t data_len = multiplanar_ ? planes[0].bytesused : buf.bytesused;
+        decode_mjpg(buffers_[buf.index].start[0], data_len, frame);
+    }
+    else if (pixfmt_ == V4L2_PIX_FMT_NV12)
+    {
+        // NV12 → RGB: cvtColorTwoPlane 接受分离的 Y/UV Mat (支持 stride)
+        const unsigned char *y_data = (const unsigned char *)buffers_[buf.index].start[0];
+        const unsigned char *uv_data;
+        int y_stride = bytesperline_;
+        int uv_stride;
 
+        if (multiplanar_ && n_planes_ == 2)
+        {
+            uv_data = (const unsigned char *)buffers_[buf.index].start[1];
+            uv_stride = y_stride;  // NV12: UV stride == Y stride
+        }
+        else
+        {
+            uv_data = y_data + y_stride * height_;
+            uv_stride = y_stride;
+        }
+
+        cv::Mat y_mat(height_, width_, CV_8UC1, (void *)y_data, y_stride);
+        cv::Mat uv_mat(height_ / 2, width_ / 2, CV_8UC2, (void *)uv_data, uv_stride);
+        cv::cvtColorTwoPlane(y_mat, uv_mat, frame, cv::COLOR_YUV2RGB_NV12);
+    }
+    else if (pixfmt_ == V4L2_PIX_FMT_YUYV)
+    {
+        size_t data_len = multiplanar_ ? planes[0].bytesused : buf.bytesused;
+        int stride = bytesperline_ > 0 ? bytesperline_ : width_ * 2;
+        if ((size_t)stride * (size_t)height_ > data_len)
+        {
+            printf("[v4l2] YUYV frame too short (need %d, got %zu)\n", stride * height_, data_len);
+            frame = cv::Mat();
+        }
+        else
+        {
+            cv::Mat yuyv_mat(height_, width_, CV_8UC2, buffers_[buf.index].start[0], stride);
+            cv::cvtColor(yuyv_mat, frame, cv::COLOR_YUV2RGB_YUY2);
+        }
+    }
+    else if (pixfmt_ == V4L2_PIX_FMT_UYVY)
+    {
+        size_t data_len = multiplanar_ ? planes[0].bytesused : buf.bytesused;
+        int stride = bytesperline_ > 0 ? bytesperline_ : width_ * 2;
+        if ((size_t)stride * (size_t)height_ > data_len)
+        {
+            printf("[v4l2] UYVY frame too short (need %d, got %zu)\n", stride * height_, data_len);
+            frame = cv::Mat();
+        }
+        else
+        {
+            cv::Mat uyvy_mat(height_, width_, CV_8UC2, buffers_[buf.index].start[0], stride);
+            cv::cvtColor(uyvy_mat, frame, cv::COLOR_YUV2RGB_UYVY);
+        }
+    }
+    else
+    {
+        frame = cv::Mat();
+    }
+
+    // 重新入队 (保留 DQBUF 返回的 buf.index)
+    unsigned int idx = buf.index;
+    CLEAR(buf);
+    CLEAR(planes);
+    buf.type   = buf_type;
+    buf.memory = V4L2_MEMORY_MMAP;
+    buf.index  = idx;
+    if (multiplanar_)
+    {
+        buf.m.planes = planes;
+        buf.length   = n_planes_;
+    }
     if (ioctl(fd_, VIDIOC_QBUF, &buf) < 0)
     {
         printf("[v4l2] QBUF requeue failed: %s\n", strerror(errno));

@@ -1,7 +1,36 @@
-// RTMP 推流实现: MPP 硬件 H.264 编码 + librtmp 推流
-// 异步架构: 检测线程 submit() swap Mat 就返回, 编码+发送在独立 sender 线程
-// RGB→NV12 优先走 RGA 硬件加速, 失败时回退 CPU
+/*
+================================================================================
+【文件总说明】
+文件：rtmp_sink.cc
+功能：RTMP 推流实现，基于 MPP 硬件 H.264 编码 + librtmp 推流
+用途：提供 RtmpSink 类，将检测画面编码为 H.264 并推送到 RTMP 服务器（如 mediamtx）
 
+【整体工作流程】
+1. open()：初始化 MPP 编码器 + 连接 RTMP 服务器 + 启动 sender 线程
+2. init_mpp()：配置 MPP H.264 编码器（CBR、High Profile、GOP=1s）
+   - 预分配 MppFrame + MppBuffer 跨帧复用，避免 double free
+   - 预导入 MPP DMA buffer 到 RGA，缓存 handle 用于 RGB→NV12 硬件加速
+3. 检测线程调用 submit(rgb_frame)：
+   - 与 pending_frame_ 做 std::swap（O(1) 浅拷贝），不阻塞检测线程
+   - notify 唤醒 sender 线程
+4. sender 线程循环：
+   - 等待 pending_cv_ 唤醒，swap 拿走待发帧
+   - encode_and_send()：
+     a. RGB→NV12：优先 RGA 硬件加速，失败回退 CPU rgb_to_nv12()
+     b. MPP 编码：encode_put_frame + encode_get_packet
+     c. 解析 H.264 NAL：SPS+PPS 合并为 AVC sequence header，IDR/P 用 AVCC 格式
+     d. RTMP_SendPacket 发送到服务器
+5. close()：停止 sender 线程 → 断开 RTMP → deinit_mpp 释放编码器资源
+
+关键技术点：
+- MPP H.264 硬编码：CBR 1Mbps, High Profile, Level 4.0, CABAC
+- RGB→NV12 双路径：RGA 硬件加速（~1ms）或 CPU 回退（~3ms）
+- SPS/PPS 通过 EACH_IDR 模式从码流中提取，构造 AVCDecoderConfigurationRecord
+- RTMPPacket 内存安全：置 NULL m_vecChannelsOut 副本的 m_body 防 double-free
+- MppFrame/MppBuffer 跨帧复用，避免每帧 mpp_frame_deinit 导致 buffer 过早释放
+- sender 线程编码/发送失败时置 send_failed_ 标志退出，不在线程内调 close() 防死锁
+================================================================================
+*/
 #include "rtmp_sink.h"
 
 #include <stdio.h>
@@ -23,7 +52,14 @@ extern "C" {
 // =====================================================================
 // 构造 / 析构
 // =====================================================================
+/**
+ * @brief 构造函数，成员初始化为默认值
+ */
 RtmpSink::RtmpSink() {}
+
+/**
+ * @brief 析构函数，自动关闭 RTMP 连接并释放资源
+ */
 RtmpSink::~RtmpSink() { close(); }
 
 // =====================================================================
@@ -33,13 +69,22 @@ RtmpSink::~RtmpSink() { close(); }
 // enc_w/enc_h: 编码器 NV12 尺寸 (16 对齐后, >= src)
 // 超出 src 范围的像素填 0 (黑), 保证 MPP 编码不会读越界或花屏
 // =====================================================================
+/**
+ * @brief CPU 实现 RGB888 → NV12 色彩空间转换，BT.601 full range，UV 取 2x2 平均
+ * @param rgb 输入 RGB888 数据（3字节/像素，紧密排列）
+ * @param src_w 输入图像宽度
+ * @param src_h 输入图像高度
+ * @param nv12 [OUT] 输出 NV12 数据（Y 平面 + UV 交错平面）
+ * @param enc_w 输出 NV12 宽度（16 对齐，>= src_w）
+ * @param enc_h 输出 NV12 高度（16 对齐，>= src_h）
+ * @return 固定返回0
+ */
 int RtmpSink::rgb_to_nv12(const unsigned char *rgb, int src_w, int src_h,
                            unsigned char *nv12, int enc_w, int enc_h)
 {
     unsigned char *y_plane  = nv12;
     unsigned char *uv_plane = nv12 + enc_w * enc_h;
 
-    // 只在 src != enc 时才需要清零 padding 区域 (src==enc 时完全覆盖, 无 padding)
     bool need_padding = (src_w != enc_w || src_h != enc_h);
     if (need_padding)
     {
@@ -54,11 +99,9 @@ int RtmpSink::rgb_to_nv12(const unsigned char *rgb, int src_w, int src_h,
             int g = rgb[(j * src_w + i) * 3 + 1];
             int b = rgb[(j * src_w + i) * 3 + 2];
 
-            // BT.601 full range
             int y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
             y_plane[j * enc_w + i] = (unsigned char)(y < 0 ? 0 : y > 255 ? 255 : y);
 
-            // UV: 每 2x2 像素取一次 (简单平均)
             if ((j & 1) == 0 && (i & 1) == 0)
             {
                 int r0 = r, g0 = g, b0 = b;
@@ -94,6 +137,11 @@ int RtmpSink::rgb_to_nv12(const unsigned char *rgb, int src_w, int src_h,
 // 省 CPU ~1-2ms/帧 (640x480). MPP DMA buffer 预导入缓存 (rga_dst_handle_).
 // 失败时返回 false, 调用方回退 CPU rgb_to_nv12().
 // =====================================================================
+/**
+ * @brief 尝试使用 RGA 硬件将 RGB888 Mat 转换为 NV12 并写入 MPP DMA 缓冲
+ * @param rgb 输入 RGB cv::Mat（CV_8UC3，需连续存储）
+ * @return true 成功，false 失败（需回退 CPU rgb_to_nv12）
+ */
 bool RtmpSink::try_rga_rgb_to_nv12(const cv::Mat &rgb)
 {
     if (rga_dst_handle_ == 0) return false;       // MPP buffer 未导入 RGA
@@ -125,9 +173,14 @@ bool RtmpSink::try_rga_rgb_to_nv12(const cv::Mat &rgb)
     return true;
 }
 
-// =====================================================================
-// MPP 初始化
-// =====================================================================
+/**
+ * @brief 初始化 MPP H.264 硬件编码器，配置编码参数并预分配帧缓冲
+ * @param width 编码宽度（会被 16 对齐）
+ * @param height 编码高度（会被 16 对齐）
+ * @param fps 编码帧率
+ * @param bitrate_kbps 目标码率（kbps）
+ * @return 0成功，-1失败
+ */
 int RtmpSink::init_mpp(int width, int height, int fps, int bitrate_kbps)
 {
     MPP_RET ret = MPP_OK;
@@ -250,6 +303,9 @@ int RtmpSink::init_mpp(int width, int height, int fps, int bitrate_kbps)
     return 0;
 }
 
+/**
+ * @brief 释放 MPP 编码器资源：RGA handle、帧缓冲、编码配置、buffer 组、编码器实例
+ */
 void RtmpSink::deinit_mpp()
 {
     // 释放 RGA 缓存 handle
@@ -290,9 +346,11 @@ void RtmpSink::deinit_mpp()
     sps_pps_sent_ = false;
 }
 
-// =====================================================================
-// 发送 RTMP 包并清理 (防止 m_vecChannelsOut 副本 double-free)
-// =====================================================================
+/**
+ * @brief 发送 RTMP 包并安全清理，防止 m_vecChannelsOut 副本导致 double-free
+ * @param packet 待发送的 RTMPPacket 指针（函数内释放）
+ * @return 0成功，-1发送失败
+ */
 int RtmpSink::send_rtmp_packet(RTMPPacket *packet)
 {
     if (!RTMP_SendPacket((RTMP *)rtmp_, packet, FALSE))
@@ -312,12 +370,14 @@ int RtmpSink::send_rtmp_packet(RTMPPacket *packet)
     return 0;
 }
 
-// =====================================================================
-// H.264 NAL 单元解析 + RTMP 发送
-// RTMP 规范要求:
-//   SPS+PPS 合并为一个 AVC sequence header (AVCDecoderConfigurationRecord)
-//   IDR/P 帧用 AVCC 格式 (4字节大端长度 + NAL数据)
-// =====================================================================
+/**
+ * @brief 解析 H.264 码流中的 NAL 单元，构造 RTMP 包并发送
+ *        SPS+PPS 合并为 AVCDecoderConfigurationRecord，IDR/P 帧用 AVCC 格式
+ * @param data H.264 码流数据（含起始码 00 00 00 01 / 00 00 01）
+ * @param len 码流数据长度
+ * @param pts_ms 时间戳（毫秒）
+ * @return 0成功，-1发送失败
+ */
 int RtmpSink::send_h264_nalus(const unsigned char *data, size_t len, int64_t pts_ms)
 {
     if (!rtmp_) return -1;
@@ -478,9 +538,12 @@ int RtmpSink::send_h264_nalus(const unsigned char *data, size_t len, int64_t pts
     return 0;
 }
 
-// =====================================================================
-// 编码一帧并发送
-// =====================================================================
+/**
+ * @brief 编码一帧 RGB 图像为 H.264 并通过 RTMP 发送
+ *        流程：RGB→NV12 → MPP 编码 → 解析 NAL → RTMP 发送
+ * @param rgb 输入 RGB cv::Mat（CV_8UC3）
+ * @return 0成功，-1编码或发送失败
+ */
 int RtmpSink::encode_and_send(const cv::Mat &rgb)
 {
     if (!mpp_inited_ || !rtmp_) return -1;
@@ -543,9 +606,11 @@ int RtmpSink::encode_and_send(const cv::Mat &rgb)
     return 0;
 }
 
-// =====================================================================
-// 异步提交 (与 MjpegHttpSink 接口一致)
-// =====================================================================
+/**
+ * @brief 异步提交一帧 RGB 图像供 sender 线程编码发送
+ * @param rgb_frame RGB cv::Mat（CV_8UC3），调用后与 pending_frame_ 交换，调用方可继续复用
+ * @param quality 未使用（保持与 MjpegHttpSink 接口一致）
+ */
 void RtmpSink::submit(cv::Mat &rgb_frame, int quality)
 {
     (void)quality;
@@ -558,9 +623,11 @@ void RtmpSink::submit(cv::Mat &rgb_frame, int quality)
     pending_cv_.notify_one();
 }
 
-// =====================================================================
-// sender 线程
-// =====================================================================
+/**
+ * @brief sender 线程入口静态函数，调用 sender_loop()
+ * @param arg RtmpSink 对象指针
+ * @return nullptr
+ */
 void *RtmpSink::sender_thread_fn(void *arg)
 {
     RtmpSink *self = (RtmpSink *)arg;
@@ -568,6 +635,10 @@ void *RtmpSink::sender_thread_fn(void *arg)
     return nullptr;
 }
 
+/**
+ * @brief sender 线程主循环：等待新帧 → swap 拿走 → encode_and_send 编码发送
+ *        编码/发送失败时置 send_failed_ 标志并退出（不在线程内调 close() 防死锁）
+ */
 void RtmpSink::sender_loop()
 {
     while (running_.load())
@@ -598,9 +669,15 @@ void RtmpSink::sender_loop()
     pending_frame_.release();
 }
 
-// =====================================================================
-// open / close
-// =====================================================================
+/**
+ * @brief 打开 RTMP 推流通道：初始化 MPP 编码器 → 连接 RTMP 服务器 → 启动 sender 线程
+ * @param rtmp_url RTMP 推流地址（如 rtmp://127.0.0.1:1936/live/stream）
+ * @param width 编码宽度，0 使用默认值 640
+ * @param height 编码高度，0 使用默认值 480
+ * @param fps 编码帧率，0 使用默认值 30
+ * @param bitrate_kbps 目标码率（kbps），0 使用默认值 1000
+ * @return 0成功，-1失败
+ */
 int RtmpSink::open(const char *rtmp_url, int width, int height, int fps, int bitrate_kbps)
 {
     // 1. 初始化 MPP 编码器
@@ -679,6 +756,9 @@ int RtmpSink::open(const char *rtmp_url, int width, int height, int fps, int bit
     return 0;
 }
 
+/**
+ * @brief 关闭 RTMP 推流通道：停止 sender 线程 → 断开 RTMP 连接 → 释放 MPP 编码器资源
+ */
 void RtmpSink::close()
 {
     running_.store(false);

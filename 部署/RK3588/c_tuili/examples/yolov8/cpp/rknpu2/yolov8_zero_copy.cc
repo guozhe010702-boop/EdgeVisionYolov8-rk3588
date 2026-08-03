@@ -12,6 +12,40 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/*
+================================================================================
+【文件总说明】
+文件：yolov8_zero_copy.cc（RKNPU2 零拷贝模式）
+功能：RK3588 等 RKNPU2 平台的 YOLOv8 模型加载、推理、释放
+      使用零拷贝 API（rknn_create_mem + rknn_set_io_mem），输入输出直接在 NPU DMA 内存操作
+
+【整体工作流程】
+1. init_yolov8_model()：加载 RKNN 模型文件
+   - rknn_init 初始化推理上下文
+   - rknn_query 获取 native 输入输出属性（NPU 原生格式，如 NC1HWC2）
+   - rknn_create_mem 为输入/输出分配 NPU DMA 内存
+   - rknn_set_io_mem 将 DMA 内存绑定到输入/输出槽位
+   - 保存 input_native_attrs 和 output_native_attrs（含 NC1HWC2 格式信息）
+   - 使用局部变量 + goto cleanup 模式，确保失败时不污染 app_ctx
+2. inference_yolov8_model()：单帧推理
+   - letterbox 预处理直接写入 NPU DMA 输入内存（零拷贝，无需 rknn_inputs_set）
+   - rknn_run 执行推理
+   - 逐输出分支：NC1HWC2_i8_to_NCHW_i8 转换为 NCHW 排布，供 post_process 使用
+   - post_process 后处理
+   - 释放转换后的临时输出缓冲
+3. NC1HWC2_i8_to_NCHW_i8()：将 NPU 原生 NC1HWC2 int8 排布转为标准 NCHW int8
+4. release_yolov8_model()：释放 DMA 内存、属性数组、销毁 RKNN 上下文
+
+关键技术点：
+- 零拷贝：输入直接写入 NPU DMA 内存，省去 rknn_inputs_set 的 memcpy
+- 输出排布 NC1HWC2：NPU 内部将通道按 C2=4 分组，软件需转回 NCHW 才能做后处理
+- 输入设 UINT8 类型，NPU 自动将归一化+量化融合在硬件内
+- rknn_run 打印节流到 1s 一次，减少 syscall 开销
+- init_yolov8_model 使用局部变量 + goto cleanup，失败时不泄漏也不污染 app_ctx
+- 5 参数 rknn_init（第 5 参数传 NULL）
+================================================================================
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +57,10 @@
 #include "file_utils.h"
 #include "image_utils.h"
 
+/**
+ * @brief 打印 rknn_tensor_attr 结构体的详细信息（含 w_stride、size_with_stride）
+ * @param attr 指向待打印的张量属性结构体
+ */
 static void dump_tensor_attr(rknn_tensor_attr *attr) {
     char dims[128] = {0};
     for (int i = 0; i < attr->n_dims; ++i) {
@@ -37,6 +75,13 @@ static void dump_tensor_attr(rknn_tensor_attr *attr) {
            attr->scale);
 }
 
+/**
+ * @brief 初始化 YOLOv8 RKNN 模型（零拷贝模式）：加载权重、分配 NPU DMA 内存、绑定 IO
+ *        使用局部变量 + goto cleanup，确保失败时不污染 app_ctx
+ * @param model_path RKNN 模型文件路径
+ * @param app_ctx [OUT] RKNN 应用上下文，成功后包含模型句柄、DMA 内存、native 逻辑属性等
+ * @return 0成功，-1失败
+ */
 int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx) {
     int ret;
     int model_len = 0;
@@ -254,6 +299,20 @@ cleanup:
     return -1;
 }
 
+/**
+ * @brief 将 NPU 原生 NC1HWC2 int8 排布转换为标准 NCHW int8 排布
+ *        NC1HWC2：通道按 C2=4 分组，内存布局为 [N][C1][H][W][C2]
+ *        NCHW：标准排布 [N][C][H][W]
+ * @param src NC1HWC2 格式源数据指针
+ * @param dst [OUT] NCHW 格式目标数据指针
+ * @param dims NC1HWC2 维度数组 [N, C1, H, W, C2]
+ * @param channel 逻辑通道数（= C1 * C2）
+ * @param h 空间高度
+ * @param w 空间宽度
+ * @param zp 量化零点（未使用，保留参数）
+ * @param scale 量化缩放系数（未使用，保留参数）
+ * @return 固定返回0
+ */
 int NC1HWC2_i8_to_NCHW_i8(const int8_t *src, int8_t *dst, int *dims, int channel, int h, int w, int zp, float scale) {
     int batch  = dims[0];
     int C1     = dims[1];
@@ -278,6 +337,12 @@ int NC1HWC2_i8_to_NCHW_i8(const int8_t *src, int8_t *dst, int *dims, int channel
     return 0;
 }
 
+/**
+ * @brief 释放 YOLOv8 模型资源（零拷贝模式）：释放属性数组、DMA 内存、RKNN 上下文
+ *        每个 mem 都尝试 destroy，不因单个失败而跳过后续（防泄漏）
+ * @param app_ctx RKNN 应用上下文
+ * @return 0成功，-1有任何 rknn_destroy_mem/rknn_destroy 失败
+ */
 int release_yolov8_model(rknn_app_context_t *app_ctx) {
     int ret;
     int any_fail = 0;
@@ -332,6 +397,13 @@ int release_yolov8_model(rknn_app_context_t *app_ctx) {
     return any_fail ? -1 : 0;
 }
 
+/**
+ * @brief YOLOv8 单帧推理（零拷贝模式）：letterbox 直写 NPU DMA → rknn_run → NC1HWC2→NCHW → post_process
+ * @param app_ctx RKNN 应用上下文
+ * @param img 输入图像（RGB888 格式）
+ * @param od_results [OUT] 检测结果列表
+ * @return 0成功，-1失败
+ */
 int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, object_detect_result_list *od_results) {
     int ret;
     image_buffer_t dst_img;

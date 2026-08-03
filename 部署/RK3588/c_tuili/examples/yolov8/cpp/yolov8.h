@@ -13,8 +13,8 @@
 // limitations under the License.
 
 
-#ifndef _RKNN_DEMO_YOLOV8_H_
-#define _RKNN_DEMO_YOLOV8_H_
+#ifndef _YOLOV8_H_
+#define _YOLOV8_H_
 
 #include "rknn_api.h"
 #include "common.h"

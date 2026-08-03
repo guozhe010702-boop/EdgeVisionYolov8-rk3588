@@ -12,6 +12,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/*
+================================================================================
+【文件总说明】
+文件：main_stream.cc
+功能：YOLOv8 实时摄像头检测演示程序入口
+用途：通过 V4L2 直接采集摄像头画面，逐帧推理检测，支持 MJPEG/RTMP 推流和视频录制
+
+【整体工作流程】
+1. main() 解析命令行参数：模型路径 + 摄像头设备 + 分辨率/帧率 + 推流参数
+2. 注册 SIGINT/SIGTERM 信号处理器，实现优雅退出
+3. 根据 push_arg 创建推流对象：
+   - 纯数字端口 → MjpegHttpSink（MJPEG-over-HTTP 推流）
+   - rtmp:// URL → RtmpSink（H.264 硬编码 + RTMP 推流）
+4. init_post_process() + init_yolov8_model()：初始化后处理和 RKNN 模型
+5. run_stream_detect() 核心循环：
+   5.1 V4L2Capture 直接采集 RGB 帧（跳过 BGR→RGB 转换）
+   5.2 封装为 image_buffer_t，RV1106 平台拷贝到 CMA 内存
+   5.3 inference_yolov8_model()：推理 + 后处理
+   5.4 在 RGB 图上画检测框和标签
+   5.5 预览窗口 imshow + VideoWriter 录制（HEADLESS 模式下均禁用）
+   5.6 异步推流：submit() 一次 Mat swap 即返回，编码/发送在独立线程
+   5.7 V4L2 连续失败超过 2s 才退出，短暂 USB 抖动不中断
+6. 检测到信号/RTMP 断开/用户按 q 后退出，释放推流对象和模型资源
+
+关键技术点：
+- V4L2 直出 RGB，跳过 BGR→RGB 转换开销
+- 预分配 cv::Mat 缓冲帧外复用，避免每帧 allocate/deallocate
+- 异步 producer-consumer 推流模型，检测线程不阻塞
+- HEADLESS 模式去除 OpenCV highgui/videoio 依赖，减少部署体积
+================================================================================
+*/
+
 /*-------------------------------------------
                 Includes
 -------------------------------------------*/
@@ -53,6 +85,11 @@
 
 // Ctrl+C / kill 触发的优雅退出标志 (async-signal-safe, 仅置位)
 static std::atomic<int> g_stop_requested{0};
+
+/**
+ * @brief SIGINT/SIGTERM 信号处理函数，仅置位原子标志，不执行任何不安全操作
+ * @param signo 信号编号（未使用）
+ */
 static void on_sigint(int signo)
 {
     (void)signo;
@@ -73,6 +110,19 @@ static void on_sigint(int signo)
               ./rknn_yolov8_demo_stream model/best.rknn /dev/video11 0 0 0 "" rtmp://127.0.0.1:1936/live/stream
         按 'q' 退出预览
 -------------------------------------------*/
+/**
+ * @brief 实时摄像头检测核心循环，逐帧采集→推理→绘制→推流
+ * @param rknn_app_ctx RKNN 应用上下文
+ * @param source 摄像头设备路径（如 /dev/video0）或序号（如 "0"）
+ * @param req_w 请求分辨率宽度，0 表示使用默认值
+ * @param req_h 请求分辨率高度，0 表示使用默认值
+ * @param req_fps 请求帧率，0 表示使用默认值
+ * @param save_path 视频录制输出路径，NULL 或空串表示不录制
+ * @param show_window 是否开启预览窗口
+ * @param mjpeg_sink MJPEG 推流对象指针，NULL 表示不推 MJPEG
+ * @param rtmp_sink_raw RTMP 推流对象指针，NULL 表示不推 RTMP
+ * @return 0成功，-1失败
+ */
 static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
                              const char *source,
                              int req_w, int req_h, int req_fps,
@@ -311,6 +361,12 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
     return ret;
 }
 
+/**
+ * @brief 实时摄像头检测程序入口，解析参数、初始化模型和推流、运行检测循环
+ * @param argc 参数个数，至少为3
+ * @param argv 命令行参数：argv[1]=模型路径, argv[2]=摄像头设备, argv[3-8]可选
+ * @return 0成功，-1失败
+ */
 int main(int argc, char **argv)
 {
     if (argc < 3)

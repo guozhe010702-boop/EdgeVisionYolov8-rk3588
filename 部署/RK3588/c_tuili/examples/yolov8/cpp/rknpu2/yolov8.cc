@@ -12,6 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/*
+================================================================================
+【文件总说明】
+文件：yolov8.cc（RKNPU2 标准模式）
+功能：RK3588 等 RKNPU2 平台的 YOLOv8 模型加载、推理、释放
+      使用标准 rknn_inputs_set / rknn_outputs_get API（非零拷贝）
+
+【整体工作流程】
+1. init_yolov8_model()：加载 RKNN 模型文件
+   - rknn_init 初始化推理上下文
+   - rknn_query 获取输入输出数量和张量属性
+   - 判断量化类型（U8 affine = 量化模型）
+   - 根据输入格式（NCHW/NHWC）解析模型宽高通道数
+2. inference_yolov8_model()：单帧推理
+   - 分配 letterbox 目标缓冲，convert_image_with_letterbox 预处理
+   - rknn_inputs_set 填入输入数据（UINT8 NHWC 格式）
+   - rknn_run 执行推理
+   - rknn_outputs_get 获取输出张量（量化模型取原始 int8/u8，非量化取 float）
+   - post_process 后处理（NMS、坐标映射等）
+   - rknn_outputs_release 释放输出
+3. release_yolov8_model()：释放模型上下文和属性内存
+
+关键技术点：
+- 标准 API 流程：inputs_set → run → outputs_get → outputs_release
+- 5 参数 rknn_init（第 5 参数传 NULL）
+- dims 解析注意：dump_tensor_attr 打印顺序为 dims[3],dims[2],dims[1],dims[0]
+  但实际数组存储为 [N,C,H,W] 或 [N,H,W,C]，需按 fmt 判断
+================================================================================
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +52,10 @@
 #include "file_utils.h"
 #include "image_utils.h"
 
+/**
+ * @brief 打印 rknn_tensor_attr 结构体的详细信息（维度、量化参数、格式等）
+ * @param attr 指向待打印的张量属性结构体
+ */
 static void dump_tensor_attr(rknn_tensor_attr *attr)
 {
     printf("  index=%d, name=%s, n_dims=%d, dims=[%d, %d, %d, %d], n_elems=%d, size=%d, fmt=%s, type=%s, qnt_type=%s, "
@@ -31,6 +65,12 @@ static void dump_tensor_attr(rknn_tensor_attr *attr)
            get_qnt_type_string(attr->qnt_type), attr->zp, attr->scale);
 }
 
+/**
+ * @brief 初始化 YOLOv8 RKNN 模型：加载权重、查询输入输出属性、设置上下文
+ * @param model_path RKNN 模型文件路径
+ * @param app_ctx [OUT] RKNN 应用上下文，成功后包含模型句柄、IO 属性、宽高通道等信息
+ * @return 0成功，-1失败
+ */
 int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx)
 {
     int ret;
@@ -137,6 +177,11 @@ int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx)
     return 0;
 }
 
+/**
+ * @brief 释放 YOLOv8 模型资源：释放属性内存、销毁 RKNN 上下文
+ * @param app_ctx RKNN 应用上下文
+ * @return 0成功
+ */
 int release_yolov8_model(rknn_app_context_t *app_ctx)
 {
     if (app_ctx->input_attrs != NULL)
@@ -157,6 +202,13 @@ int release_yolov8_model(rknn_app_context_t *app_ctx)
     return 0;
 }
 
+/**
+ * @brief YOLOv8 单帧推理：letterbox 预处理 → rknn_inputs_set → rknn_run → rknn_outputs_get → post_process
+ * @param app_ctx RKNN 应用上下文
+ * @param img 输入图像（RGB888 格式）
+ * @param od_results [OUT] 检测结果列表
+ * @return 0成功，-1失败
+ */
 int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, object_detect_result_list *od_results)
 {
     int ret;

@@ -12,6 +12,37 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/*
+================================================================================
+【文件总说明】
+文件：yolov8.cpp
+功能：RK平台(RK3588/RV1106/RV1103等RKNPU) YOLOv8模型后处理代码
+支持模型：YOLOv8 detect 检测模型（DFL分布焦点损失输出分支）
+支持数据格式：FP32、U8量化、I8量化；区分RKNPU1/RKNPU2、RV1106 NHWC特殊排布
+
+【整体工作流程】
+1. init_post_process()：加载类别标签txt文件，初始化全局类别名字符串数组
+2. rknn推理完成后调用 post_process() 入口函数
+   2.1 遍历3个输出分支（3个不同stride检测头）
+   2.2 根据芯片型号、量化类型选择对应process_xxx解析函数
+   2.3 解析模型输出张量：反量化(量化模型) → DFL解码得到预测框坐标
+   2.4 根据置信度阈值过滤低置信目标，收集候选框、置信度、类别ID
+3. 全部检测头解析完成后：
+   3.1 按照置信度从高到低排序所有候选框
+   3.2 按类别执行NMS非极大值抑制，去除重叠框
+4. 坐标映射修正：去除letterbox填充偏移，缩放回原图分辨率
+5. 将最终检测结果存入 object_detect_result_list 对外输出
+6. 外部接口 coco_cls_to_name() 根据类别ID获取类别名称
+7. deinit_post_process() 释放标签内存，资源回收
+
+关键技术点：
+- DFL：Distribution Focal Loss，将4个坐标拆解为分布预测，通过softmax加权求和得到最终坐标
+- NMS：按类别独立做非极大抑制，使用IOU阈值剔除高度重叠框
+- 量化支持：实现u8/i8 affine量化正反转换函数
+- 硬件兼容：区分RV1106 NHWC输出排布、RKNPU1/RKNPU2 NCHW张量维度差异
+================================================================================
+*/
+
 #include "yolov8.h"
 
 #include <math.h>
@@ -23,79 +54,109 @@
 
 #include <set>
 #include <vector>
-#define LABEL_NALE_TXT_PATH "./model/coco_80_labels_list.txt"
 
 static char *labels[OBJ_CLASS_NUM];
 
+/**
+ * @brief 将数值限制在 [min, max] 区间内
+ * @param val 待裁剪浮点数
+ * @param min 最小值
+ * @param max 最大值
+ * @return 裁剪后数值
+ */
 inline static int clamp(float val, int min, int max) { return val > min ? (val < max ? val : max) : min; }
 
-static char *readLine(FILE *fp, char *buffer, int *len)
+/**
+ * @brief 加载类别标签文本文件，读取每一行类别名称存入字符串数组
+ * @param locationFilename 标签txt文件路径
+ * @param label 输出：类别名称指针数组
+ * @return 成功读取的类别数量；读取失败返回0
+ */
+static int loadLabelName(const char *locationFilename, char *label[])
 {
-    int ch;
-    int i = 0;
-    size_t buff_len = 0;
-
-    buffer = (char *)malloc(buff_len + 1);
-    if (!buffer)
-        return NULL; // Out of memory
-
-    while ((ch = fgetc(fp)) != '\n' && ch != EOF)
+    if (locationFilename == NULL || label == NULL || OBJ_CLASS_NUM <= 0)
     {
-        buff_len++;
-        void *tmp = realloc(buffer, buff_len + 1);
-        if (tmp == NULL)
-        {
-            free(buffer);
-            return NULL; // Out of memory
-        }
-        buffer = (char *)tmp;
-
-        buffer[i] = (char)ch;
-        i++;
+        printf("Invalid parameter!\n");
+        return 0;
     }
-    buffer[i] = '\0';
 
-    *len = buff_len;
+    printf("load label %s\n", locationFilename);
 
-    // Detect end
-    if (ch == EOF && (i == 0 || ferror(fp)))
-    {
-        free(buffer);
-        return NULL;
-    }
-    return buffer;
-}
-
-static int readLines(const char *fileName, char *lines[], int max_line)
-{
-    FILE *file = fopen(fileName, "r");
-    char *s;
-    int i = 0;
-    int n = 0;
-
+    FILE *file = fopen(locationFilename, "r");
     if (file == NULL)
     {
-        printf("Open %s fail!\n", fileName);
-        return -1;
+        printf("Open %s fail!\n", locationFilename);
+        return 0;
     }
 
-    while ((s = readLine(file, s, &n)) != NULL)
+    int i = 0;
+    const int max_line = OBJ_CLASS_NUM;
+    const size_t MAX_SINGLE_LINE = 512;
+    // 预分配行缓冲区，避免循环内频繁realloc
+    char *line_buf = (char *)malloc(MAX_SINGLE_LINE);
+    if (line_buf == NULL)
     {
-        lines[i++] = s;
-        if (i >= max_line)
-            break;
+        fclose(file);
+        printf("malloc line buffer failed\n");
+        return 0;
     }
+
+    while (i < max_line)
+    {
+        int ch;
+        int line_idx = 0;
+
+        while ((ch = fgetc(file)) != '\n' && ch != EOF)
+        {
+            if ((size_t)line_idx >= MAX_SINGLE_LINE - 1)
+            {
+                while ((fgetc(file)) != '\n' && fgetc(file) != EOF)
+                    ;
+                break;
+            }
+            line_buf[line_idx++] = (char)ch;
+        }
+        line_buf[line_idx] = '\0';
+
+        // EOF并且当前无内容，终止读取
+        if (ch == EOF && line_idx == 0)
+        {
+            break;
+        }
+
+        size_t str_len = strlen(line_buf);
+        char *buffer = (char *)malloc(str_len + 1);
+        if (buffer == NULL)
+        {
+            printf("malloc label string failed\n");
+            break;
+        }
+        memcpy(buffer, line_buf, str_len + 1);
+        label[i++] = buffer;
+    }
+
+    free(line_buf);
     fclose(file);
+
+    if (i < max_line)
+    {
+        for (int k = 0; k < i; k++)
+        {
+            free(label[k]);
+            label[k] = NULL;
+        }
+        i = 0;
+    }
+
     return i;
 }
 
-static int loadLabelName(const char *locationFilename, char *label[])
-{
-    printf("load lable %s\n", locationFilename);
-    readLines(locationFilename, label, OBJ_CLASS_NUM);
-    return 0;
-}
-
+/**
+ * @brief 计算两个矩形框的IOU交并比
+ * @param xmin0,ymin0,xmax0,ymax0 框1左上角、右下角坐标
+ * @param xmin1,ymin1,xmax1,ymax1 框2左上角、右下角坐标
+ * @return IOU值 [0,1]
+ */
 static float CalculateOverlap(float xmin0, float ymin0, float xmax0, float ymax0, float xmin1, float ymin1, float xmax1,
                               float ymax1)
 {
@@ -106,6 +167,16 @@ static float CalculateOverlap(float xmin0, float ymin0, float xmax0, float ymax0
     return u <= 0.f ? 0.f : (i / u);
 }
 
+/**
+ * @brief 单类别NMS非极大值抑制，将重叠度超过阈值的候选框标记为-1剔除
+ * @param validCount 候选框总数量
+ * @param outputLocations 所有候选框坐标数组 [x,y,w,h]
+ * @param classIds 每个候选框对应的类别ID
+ * @param order 按置信度排序后的候选框下标数组
+ * @param filterId 当前需要执行NMS的目标类别
+ * @param threshold IOU阈值，超过阈值则剔除
+ * @return 固定返回0
+ */
 static int nms(int validCount, std::vector<float> &outputLocations, std::vector<int> classIds, std::vector<int> &order,
                int filterId, float threshold)
 {
@@ -144,6 +215,14 @@ static int nms(int validCount, std::vector<float> &outputLocations, std::vector<
     return 0;
 }
 
+/**
+ * @brief 快速排序：根据置信度数组，对下标索引进行逆序排序（从大到小）
+ * @param input 置信度数组
+ * @param left 排序区间左边界
+ * @param right 排序区间右边界
+ * @param indices 候选框下标索引数组，随置信度同步交换
+ * @return 基准元素位置
+ */
 static int quick_sort_indice_inverse(std::vector<float> &input, int left, int right, std::vector<int> &indices)
 {
     float key;
@@ -177,16 +256,40 @@ static int quick_sort_indice_inverse(std::vector<float> &input, int left, int ri
     return low;
 }
 
-static float sigmoid(float x) { return 1.0 / (1.0 + expf(-x)); }
+/**
+ * @brief sigmoid激活函数，增加极值截断优化运算
+ * @param x 输入浮点数
+ * @return sigmoid结果
+ */
+static float sigmoid(float x){return 1.0f / (1.0f + expf(-x));}
 
+/**
+ * @brief sigmoid逆函数
+ * @param y sigmoid输出值
+ * @return 原始输入x
+ */
 static float unsigmoid(float y) { return -1.0 * logf((1.0 / y) - 1.0); }
 
+/**
+ * @brief 将float数值裁剪至[min,max]区间，返回int32
+ * @param val 待裁剪浮点数
+ * @param min 下限
+ * @param max 上限
+ * @return 裁剪后整型值
+ */
 inline static int32_t __clip(float val, float min, float max)
 {
     float f = val <= min ? min : (val >= max ? max : val);
     return f;
 }
 
+/**
+ * @brief FP32浮点量化为int8 affine量化值
+ * @param f32 原始浮点值
+ * @param zp 量化零点
+ * @param scale 量化缩放系数
+ * @return int8量化结果
+ */
 static int8_t qnt_f32_to_affine(float f32, int32_t zp, float scale)
 {
     float dst_val = (f32 / scale) + zp;
@@ -194,6 +297,13 @@ static int8_t qnt_f32_to_affine(float f32, int32_t zp, float scale)
     return res;
 }
 
+/**
+ * @brief FP32浮点量化为uint8 affine量化值
+ * @param f32 原始浮点值
+ * @param zp 量化零点
+ * @param scale 量化缩放系数
+ * @return uint8量化结果
+ */
 static uint8_t qnt_f32_to_affine_u8(float f32, int32_t zp, float scale)
 {
     float dst_val = (f32 / scale) + zp;
@@ -201,10 +311,30 @@ static uint8_t qnt_f32_to_affine_u8(float f32, int32_t zp, float scale)
     return res;
 }
 
+/**
+ * @brief int8量化值反量化恢复为FP32浮点数
+ * @param qnt int8量化数据
+ * @param zp 量化零点
+ * @param scale 量化缩放系数
+ * @return 还原浮点数值
+ */
 static float deqnt_affine_to_f32(int8_t qnt, int32_t zp, float scale) { return ((float)qnt - (float)zp) * scale; }
 
+/**
+ * @brief uint8量化值反量化恢复为FP32浮点数
+ * @param qnt uint8量化数据
+ * @param zp 量化零点
+ * @param scale 量化缩放系数
+ * @return 还原浮点数值
+ */
 static float deqnt_affine_u8_to_f32(uint8_t qnt, int32_t zp, float scale) { return ((float)qnt - (float)zp) * scale; }
 
+/**
+ * @brief DFL分布焦点损失解码：对分布向量做softmax加权求和，得到最终4个偏移坐标
+ * @param tensor DFL原始分布向量
+ * @param dfl_len 每个坐标对应的分布长度
+ * @param box 输出：解码后的4个坐标偏移 [t0,t1,t2,t3]
+ */
 static void compute_dfl(float* tensor, int dfl_len, float* box){
     for (int b=0; b<4; b++){
         float exp_t[dfl_len];
@@ -222,6 +352,22 @@ static void compute_dfl(float* tensor, int dfl_len, float* box){
     }
 }
 
+/**
+ * @brief RKNPU U8量化模型单检测头输出解析（NCHW排布，RK3588等）
+ * @param box_tensor box分支uint8张量指针
+ * @param box_zp box张量零点；box_scale box张量缩放系数
+ * @param score_tensor 类别置信度uint8张量；score_zp/score_scale 量化参数
+ * @param score_sum_tensor 置信度总和张量，用于快速预过滤；可为nullptr
+ * @param score_sum_zp/score_sum_scale sum张量量化参数
+ * @param grid_h grid_w 当前检测头网格尺寸
+ * @param stride 当前检测头下采样步长
+ * @param dfl_len DFL分布长度
+ * @param boxes 输出：候选框x,y,w,h集合
+ * @param objProbs 输出：候选框置信度
+ * @param classId 输出：候选框类别ID
+ * @param threshold 置信度过滤阈值
+ * @return 该检测头筛选后的有效候选框数量
+ */
 static int process_u8(uint8_t *box_tensor, int32_t box_zp, float box_scale,
                       uint8_t *score_tensor, int32_t score_zp, float score_scale,
                       uint8_t *score_sum_tensor, int32_t score_sum_zp, float score_sum_scale,
@@ -297,6 +443,22 @@ static int process_u8(uint8_t *box_tensor, int32_t box_zp, float box_scale,
     return validCount;
 }
 
+/**
+ * @brief RKNPU I8量化模型单检测头输出解析（NCHW排布，RK3588等RKNPU2）
+ * @param box_tensor box分支int8张量指针
+ * @param box_zp box张量零点；box_scale box张量缩放系数
+ * @param score_tensor 类别置信度int8张量；score_zp/score_scale 量化参数
+ * @param score_sum_tensor 置信度总和张量，用于快速预过滤；可为nullptr
+ * @param score_sum_zp/score_sum_scale sum张量量化参数
+ * @param grid_h grid_w 当前检测头网格尺寸
+ * @param stride 当前检测头下采样步长
+ * @param dfl_len DFL分布长度
+ * @param boxes 输出：候选框x,y,w,h集合
+ * @param objProbs 输出：候选框置信度
+ * @param classId 输出：候选框类别ID
+ * @param threshold 置信度过滤阈值
+ * @return 该检测头筛选后的有效候选框数量
+ */
 static int process_i8(int8_t *box_tensor, int32_t box_zp, float box_scale,
                       int8_t *score_tensor, int32_t score_zp, float score_scale,
                       int8_t *score_sum_tensor, int32_t score_sum_zp, float score_sum_scale,
@@ -367,6 +529,20 @@ static int process_i8(int8_t *box_tensor, int32_t box_zp, float box_scale,
     return validCount;
 }
 
+/**
+ * @brief FP32浮点模型单检测头输出解析（NCHW排布）
+ * @param box_tensor box分支float张量指针
+ * @param score_tensor 类别置信度float张量
+ * @param score_sum_tensor 置信度总和张量，用于快速预过滤；可为nullptr
+ * @param grid_h grid_w 当前检测头网格尺寸
+ * @param stride 当前检测头下采样步长
+ * @param dfl_len DFL分布长度
+ * @param boxes 输出：候选框x,y,w,h集合
+ * @param objProbs 输出：候选框置信度
+ * @param classId 输出：候选框类别ID
+ * @param threshold 置信度过滤阈值
+ * @return 该检测头筛选后的有效候选框数量
+ */
 static int process_fp32(float *box_tensor, float *score_tensor, float *score_sum_tensor, 
                         int grid_h, int grid_w, int stride, int dfl_len,
                         std::vector<float> &boxes, 
@@ -434,6 +610,22 @@ static int process_fp32(float *box_tensor, float *score_tensor, float *score_sum
 
 
 #if defined(RV1106_1103)
+/**
+ * @brief RV1106/RV1103专用I8量化解析函数，适配芯片NHWC张量输出排布
+ * @param box_tensor box分支int8张量指针
+ * @param box_zp box张量零点；box_scale box张量缩放系数
+ * @param score_tensor 类别置信度int8张量；score_zp/score_scale 量化参数
+ * @param score_sum_tensor 置信度总和张量，用于快速预过滤；可为nullptr
+ * @param score_sum_zp/score_sum_scale sum张量量化参数
+ * @param grid_h grid_w 当前检测头网格尺寸
+ * @param stride 当前检测头下采样步长
+ * @param dfl_len DFL分布长度
+ * @param boxes 输出：候选框x,y,w,h集合
+ * @param objProbs 输出：候选框置信度
+ * @param classId 输出：候选框类别ID
+ * @param threshold 置信度过滤阈值
+ * @return 该检测头筛选后的有效候选框数量
+ */
 static int process_i8_rv1106(int8_t *box_tensor, int32_t box_zp, float box_scale,
                              int8_t *score_tensor, int32_t score_zp, float score_scale,
                              int8_t *score_sum_tensor, int32_t score_sum_zp, float score_sum_scale,
@@ -503,6 +695,16 @@ static int process_i8_rv1106(int8_t *box_tensor, int32_t box_zp, float box_scale
 }
 #endif
 
+/**
+ * @brief YOLOv8后处理入口主函数，rknn推理完成后调用
+ * @param app_ctx rknn应用上下文，包含模型宽高、量化信息、输出张量属性
+ * @param outputs rknn推理输出张量数组指针（区分RV1106与其他芯片结构体）
+ * @param letter_box letterbox填充信息：padding、缩放系数，用于坐标映射回原图
+ * @param conf_threshold 置信度阈值
+ * @param nms_threshold NMS的IOU阈值
+ * @param od_results [OUT] 最终检测结果列表
+ * @return 0成功，负数失败
+ */
 int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter_box, float conf_threshold, float nms_threshold, object_detect_result_list *od_results)
 {
 #if defined(RV1106_1103) 
@@ -655,6 +857,10 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
     return 0;
 }
 
+/**
+ * @brief 后处理模块初始化，加载类别标签文件
+ * @return 成功返回0，失败返回负数
+ */
 int init_post_process()
 {
     int ret = 0;
@@ -667,6 +873,11 @@ int init_post_process()
     return 0;
 }
 
+/**
+ * @brief 根据类别ID获取类别名称字符串
+ * @param cls_id 类别编号
+ * @return 类别名字符串指针；越界返回"null"
+ */
 char *coco_cls_to_name(int cls_id)
 {
 
@@ -683,6 +894,9 @@ char *coco_cls_to_name(int cls_id)
     return "null";
 }
 
+/**
+ * @brief 释放标签名称内存，后处理资源反初始化
+ */
 void deinit_post_process()
 {
     for (int i = 0; i < OBJ_CLASS_NUM; i++)

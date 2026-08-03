@@ -1,5 +1,5 @@
-#ifndef _RKNN_YOLOV8_DEMO_POSTPROCESS_H_
-#define _RKNN_YOLOV8_DEMO_POSTPROCESS_H_
+#ifndef _POSTPROCESS_H_
+#define _POSTPROCESS_H_
 
 #include <stdint.h>
 #include <vector>
@@ -7,6 +7,7 @@
 #include "common.h"
 #include "image_utils.h"
 
+#define LABEL_NALE_TXT_PATH "./model/coco_80_labels_list.txt"
 #define OBJ_NAME_MAX_SIZE 64
 #define OBJ_NUMB_MAX_SIZE 128
 #define OBJ_CLASS_NUM 2

@@ -1,6 +1,33 @@
-// MJPEG-over-HTTP 推流实现
-// 单进程单端口, 多客户端共享同一帧
-// 性能优化版本: 异步 sender 线程 + JPEG 缓冲复用 + writev 合并发送
+/*
+================================================================================
+【文件总说明】
+文件：mjpeg_http_sink.cc
+功能：MJPEG-over-HTTP 推流服务器实现，将检测画面以 MJPEG 流形式推送到浏览器
+用途：提供 MjpegHttpSink 类，支持多客户端同时观看、异步编码发送
+
+【整体工作流程】
+1. start(port)：创建监听 socket，启动 accept 线程和 sender 线程
+2. accept 线程循环：
+   - accept() 等待客户端连接
+   - 每个连接创建 detached 客户端线程处理 HTTP 握手
+   - 客户端线程：recv HTTP GET → 发送 200 + multipart 头 → 加入 client_fds_ 列表
+3. 检测线程调用 submit(rgb_frame, quality)：
+   - 与 pending_frame_ 做 std::swap（O(1) 浅拷贝），不阻塞检测线程
+   - notify 唤醒 sender 线程
+4. sender 线程循环：
+   - 等待 pending_cv_ 唤醒，swap 拿走待发帧
+   - encode_and_broadcast()：tjCompress2 编码 JPEG + writev 广播到所有客户端
+   - 慢客户端跳帧（EAGAIN/短写），超限则断开
+5. stop()：关监听 fd → join accept 线程 → 等客户端线程退出 → join sender 线程 → 清理
+
+关键技术点：
+- 异步 producer-consumer：检测线程 swap 即返回，编码/网络在独立 sender 线程
+- libturbojpeg tjCompress2 + TJFLAG_NOREALLOC + 预分配 buffer，避免每帧 malloc/free
+- writev() 合并 multipart header + JPEG + boundary 为一次系统调用
+- 客户端 fd 设 O_NONBLOCK，防止慢客户端阻塞 sender 线程
+- 无人观看时 submit() 直接返回，不做 swap 和 cv 唤醒
+================================================================================
+*/
 
 #include "mjpeg_http_sink.h"
 
@@ -33,9 +60,20 @@ static const char *FRAME_HEADER_FMT =
 // =====================================================================
 // 构造 / 析构
 // =====================================================================
+/**
+ * @brief 构造函数，成员初始化为默认值
+ */
 MjpegHttpSink::MjpegHttpSink() {}
+
+/**
+ * @brief 析构函数，停止推流并释放 turbojpeg 资源
+ */
 MjpegHttpSink::~MjpegHttpSink() { stop(); if (tj_) tjDestroy((tjhandle)tj_); tj_ = nullptr; if (tj_buf_) free(tj_buf_); tj_buf_ = nullptr; tj_buf_size_ = 0; }
 
+/**
+ * @brief 获取当前连接的客户端数量
+ * @return 客户端数量
+ */
 int MjpegHttpSink::clientCount()
 {
     std::lock_guard<std::mutex> lock(client_mutex_);
@@ -45,6 +83,11 @@ int MjpegHttpSink::clientCount()
 // =====================================================================
 // 异步提交: 检测线程只做一次 Mat 句柄 swap 就返回, 编码/发送在 sender 线程
 // =====================================================================
+/**
+ * @brief 异步提交一帧 RGB 图像供 sender 线程编码发送
+ * @param rgb_frame RGB cv::Mat（CV_8UC3），调用后与 pending_frame_ 交换，调用方可继续复用
+ * @param quality JPEG 编码质量（1-100），推荐 80
+ */
 void MjpegHttpSink::submit(cv::Mat &rgb_frame, int quality)
 {
     if (rgb_frame.empty()) return;
@@ -64,6 +107,11 @@ void MjpegHttpSink::submit(cv::Mat &rgb_frame, int quality)
     pending_cv_.notify_one();
 }
 
+/**
+ * @brief sender 线程入口静态函数，调用 sender_loop()
+ * @param arg MjpegHttpSink 对象指针
+ * @return nullptr
+ */
 void *MjpegHttpSink::sender_thread_fn(void *arg)
 {
     MjpegHttpSink *self = (MjpegHttpSink *)arg;
@@ -71,6 +119,10 @@ void *MjpegHttpSink::sender_thread_fn(void *arg)
     return nullptr;
 }
 
+/**
+ * @brief sender 线程主循环：等待新帧 → swap 拿走 → encode_and_broadcast 编码广播
+ *        stop_flag_ 置位且无待发帧时退出
+ */
 void MjpegHttpSink::sender_loop()
 {
     while (true)
@@ -98,9 +150,12 @@ void MjpegHttpSink::sender_loop()
     pending_frame_.release();
 }
 
-// =====================================================================
-// 编码 + 广播 (只在 sender 线程跑, 不持锁)
-// =====================================================================
+/**
+ * @brief 将 RGB 帧编码为 JPEG 并广播到所有已连接的客户端
+ * @param rgb RGB cv::Mat（CV_8UC3）
+ * @param quality JPEG 编码质量（1-100）
+ * @return 0成功，-1编码失败，1无客户端跳过
+ */
 int MjpegHttpSink::encode_and_broadcast(const cv::Mat &rgb, int quality)
 {
     if (rgb.channels() != 3 || rgb.depth() != CV_8U) return -1;
@@ -186,8 +241,15 @@ int MjpegHttpSink::encode_and_broadcast(const cv::Mat &rgb, int quality)
     return 0;
 }
 
-// 单 fd 一次 writev 发送. 返回 0=ok, 1=EAGAIN(慢), -1=err
-// 非阻塞: EAGAIN 直接返回 1, 不重试, 让发送端跳帧
+/**
+ * @brief 单客户端一次 writev 发送（multipart header + JPEG body + boundary tail）
+ * @param fd 客户端 socket fd（非阻塞）
+ * @param head multipart header 数据
+ * @param hlen header 长度
+ * @param body JPEG 数据
+ * @param blen body 长度
+ * @return 0发送成功，1客户端慢（EAGAIN/短写，应跳帧），-1连接错误
+ */
 int MjpegHttpSink::send_frame(int fd, const void *head, size_t hlen,
                               const void *body, size_t blen)
 {
@@ -213,9 +275,10 @@ int MjpegHttpSink::send_frame(int fd, const void *head, size_t hlen,
     return 0;
 }
 
-// =====================================================================
-// 客户端接入 (accept 线程, 每个连接一个 detached 线程做握手)
-// =====================================================================
+/**
+ * @brief 处理单个客户端的 HTTP 握手：recv GET → 发送 200 multipart 头 → 加入 client_fds_
+ * @param fd 客户端 socket fd
+ */
 void MjpegHttpSink::handle_client(int fd)
 {
     // recv 设超时, 避免 stop() 后线程卡在阻塞 recv
@@ -287,6 +350,11 @@ struct ClientThreadArg
     int fd;
 };
 
+/**
+ * @brief 客户端线程入口函数，提取参数后调用 handle_client，完成后递减 active_clients_
+ * @param arg ClientThreadArg 指针（含 self 和 fd），函数内 delete
+ * @return nullptr
+ */
 void *MjpegHttpSink::client_thread_fn(void *arg)
 {
     ClientThreadArg *a = (ClientThreadArg *)arg;
@@ -305,6 +373,9 @@ void *MjpegHttpSink::client_thread_fn(void *arg)
     return nullptr;
 }
 
+/**
+ * @brief accept 线程主循环：accept 新连接，为每个连接创建 detached 客户端线程
+ */
 void MjpegHttpSink::accept_loop()
 {
     while (!stop_flag_.load())
@@ -342,6 +413,11 @@ void MjpegHttpSink::accept_loop()
     }
 }
 
+/**
+ * @brief accept 线程入口静态函数，调用 accept_loop()
+ * @param arg MjpegHttpSink 对象指针
+ * @return nullptr
+ */
 void *MjpegHttpSink::accept_thread_fn(void *arg)
 {
     MjpegHttpSink *self = (MjpegHttpSink *)arg;
@@ -349,9 +425,11 @@ void *MjpegHttpSink::accept_thread_fn(void *arg)
     return nullptr;
 }
 
-// =====================================================================
-// start / stop
-// =====================================================================
+/**
+ * @brief 启动 MJPEG 推流服务器：创建监听 socket、启动 accept 线程和 sender 线程
+ * @param port 监听端口号
+ * @return 0成功，-1失败（socket/bind/listen/线程创建失败）
+ */
 int MjpegHttpSink::start(int port)
 {
     if (listen_fd_ >= 0)
@@ -419,6 +497,9 @@ int MjpegHttpSink::start(int port)
     return 0;
 }
 
+/**
+ * @brief 停止 MJPEG 推流服务器：关监听 → join accept 线程 → 等客户端退出 → join sender 线程 → 清理 fd
+ */
 void MjpegHttpSink::stop()
 {
     if (listen_fd_ < 0) return;

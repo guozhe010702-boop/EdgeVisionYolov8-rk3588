@@ -1,6 +1,36 @@
-// 直接 V4L2 摄像头采集, 绕过 OpenCV 的 videoio 和系统的 libv4l2
-// MJPG 用 libturbojpeg 解码, YUYV/UYVY/NV12 用 OpenCV cvtColor 转 RGB
-// 支持 Single-planar (USB 摄像头) 和 Multi-planar (MIPI RKISP 摄像头)
+/*
+================================================================================
+【文件总说明】
+文件：v4l2_capture.cc
+功能：V4L2 摄像头直接采集封装，绕过 OpenCV videoio 和 libv4l2 兼容层
+用途：提供 V4L2Capture 类，支持 USB（MJPEG/YUYV）和 MIPI（NV12）摄像头
+
+【整体工作流程】
+1. open()：打开 V4L2 设备，按优先级尝试 MJPG→NV12→YUYV→UYVY 格式
+   - 自动检测 Single-planar（USB）或 Multi-planar（MIPI RKISP）模式
+   - VIDIOC_S_FMT 后验证驱动是否接受了请求的格式
+   - VIDIOC_S_PARM 设置帧率（RKISP 可能不支持，不影响运行）
+2. init_mmap()：通过 VIDIOC_REQBUFS/QUERYBUF/mmap 申请帧缓冲并全部入队
+3. start_streaming()：VIDIOC_STREAMON 启动视频流
+4. read()：核心采集接口，每帧执行：
+   4.1 poll() 等待帧就绪（2s 超时）
+   4.2 VIDIOC_DQBUF 出队
+   4.3 按当前像素格式解码为 RGB：
+       - MJPG → libturbojpeg tjDecompress2 直出 RGB
+       - NV12 → OpenCV cvtColorTwoPlane（Y/UV 分离 Mat，支持 stride）
+       - YUYV/UYVY → OpenCV cvtColor（内部 NEON/SSE 优化）
+   4.4 VIDIOC_QBUF 重新入队
+5. close()：停止流、munmap 缓冲、关闭 fd、销毁 turbojpeg 句柄
+
+关键技术点：
+- 不使用 libv4l2，直接 V4L2 ioctl，避免 v4l1 兼容层导致的 UVC 不兼容
+- 支持 Multi-planar（MIPI RKISP）和 Single-planar（USB）两种 V4L2 模式
+- MJPG 解码直写 cv::Mat.data，避免 .clone() 深拷贝
+- YUV→RGB 转换使用 OpenCV 内部 NEON/SSE 优化，而非手写循环
+- 使用 poll() 而非 select() 等待帧，单 fd 场景更轻量
+- YUYV/UYVY 支持 stride（bytesperline），兼容驱动插入 padding
+================================================================================
+*/
 
 #include "v4l2_capture.h"
 
@@ -22,9 +52,19 @@ extern "C" {
 
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 
+/**
+ * @brief 构造函数，初始化成员为默认值
+ */
 V4L2Capture::V4L2Capture() {}
+
+/**
+ * @brief 析构函数，自动释放资源（关闭设备、销毁 turbojpeg 句柄）
+ */
 V4L2Capture::~V4L2Capture() { close(); }
 
+/**
+ * @brief 关闭 V4L2 设备，停止流、释放 mmap 缓冲、关闭 fd、销毁 turbojpeg 句柄
+ */
 void V4L2Capture::close()
 {
     if (fd_ >= 0)
@@ -53,6 +93,15 @@ void V4L2Capture::close()
     }
 }
 
+/**
+ * @brief 尝试设置指定的像素格式，若驱动接受则保存格式参数
+ * @param pixfmt V4L2 像素格式四CC码（如 V4L2_PIX_FMT_MJPEG）
+ * @param name 格式名称字符串（用于日志，如 "MJPG"）
+ * @param w 请求宽度
+ * @param h 请求高度
+ * @param fps 请求帧率
+ * @return 0成功（驱动接受了该格式），-1失败（驱动不支持或拒绝了该格式）
+ */
 int V4L2Capture::try_format(unsigned int pixfmt, const char *name, int w, int h, int fps)
 {
     struct v4l2_format fmt;
@@ -143,6 +192,10 @@ int V4L2Capture::try_format(unsigned int pixfmt, const char *name, int w, int h,
     return 0;
 }
 
+/**
+ * @brief 初始化 mmap 帧缓冲，申请内核缓冲并通过 mmap 映射到用户空间，然后全部入队
+ * @return 0成功，-1失败
+ */
 int V4L2Capture::init_mmap()
 {
     enum v4l2_buf_type buf_type = multiplanar_
@@ -258,6 +311,10 @@ int V4L2Capture::init_mmap()
     return 0;
 }
 
+/**
+ * @brief 启动视频流（VIDIOC_STREAMON）
+ * @return 0成功，-1失败
+ */
 int V4L2Capture::start_streaming()
 {
     enum v4l2_buf_type type = multiplanar_
@@ -272,6 +329,10 @@ int V4L2Capture::start_streaming()
     return 0;
 }
 
+/**
+ * @brief 停止视频流（VIDIOC_STREAMOFF）
+ * @return 固定返回0
+ */
 int V4L2Capture::stop_streaming()
 {
     enum v4l2_buf_type type = multiplanar_
@@ -281,9 +342,12 @@ int V4L2Capture::stop_streaming()
     return 0;
 }
 
-// =====================================================================
-// MJPG 解码 (libturbojpeg → RGB)
-// =====================================================================
+/**
+ * @brief 使用 libturbojpeg 将 MJPG 压缩数据解码为 RGB cv::Mat
+ * @param data MJPG 压缩数据指针
+ * @param len 数据长度（字节）
+ * @param out [OUT] 输出 RGB cv::Mat（CV_8UC3），解码失败时置空
+ */
 void V4L2Capture::decode_mjpg(const void *data, size_t len, cv::Mat &out)
 {
     if (!tj_) tj_ = tjInitDecompress();
@@ -333,11 +397,14 @@ void V4L2Capture::decode_mjpg(const void *data, size_t len, cv::Mat &out)
     }
 }
 
-
-
-// =====================================================================
-// 打开设备
-// =====================================================================
+/**
+ * @brief 打开 V4L2 摄像头设备，自动协商像素格式并启动视频流
+ * @param dev 设备路径（如 /dev/video0）
+ * @param req_w 请求宽度，0 或负数使用默认值 640
+ * @param req_h 请求高度，0 或负数使用默认值 480
+ * @param req_fps 请求帧率，0 或负数使用默认值 30
+ * @return 0成功，-1失败（设备不存在、格式协商失败、mmap 失败等）
+ */
 int V4L2Capture::open(const char *dev, int req_w, int req_h, int req_fps)
 {
     close();
@@ -430,9 +497,11 @@ int V4L2Capture::open(const char *dev, int req_w, int req_h, int req_fps)
     return 0;
 }
 
-// =====================================================================
-// 读取一帧
-// =====================================================================
+/**
+ * @brief 读取一帧视频，自动按当前像素格式解码为 RGB cv::Mat
+ * @param frame [OUT] 输出 RGB cv::Mat（CV_8UC3），读取失败时置空
+ * @return 0成功，-1失败（poll 超时、DQBUF 失败、解码失败等）
+ */
 int V4L2Capture::read(cv::Mat &frame)
 {
     if (fd_ < 0) return -1;

@@ -12,6 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/*
+================================================================================
+【文件总说明】
+文件：main.cc
+功能：YOLOv8 单图检测演示程序入口
+用途：加载 RKNN 模型，对单张图片执行目标检测，在结果上画框并保存为 out.png
+
+【整体工作流程】
+1. 解析命令行参数：模型路径 + 图片路径
+2. init_post_process()：加载类别标签文件
+3. init_yolov8_model()：初始化 RKNN 模型（加载权重、获取输入输出信息）
+4. read_image()：读取待检测图片到内存
+   - RV1106/RV1103 平台额外通过 dma_buf_alloc 将图片拷贝到 CMA 内存
+5. inference_yolov8_model()：执行推理（含 letterbox 预处理 + 后处理）
+6. 遍历检测结果，调用 draw_rectangle / draw_text 在图上画框和标签
+7. write_image()：保存结果图到 out.png
+8. 释放资源：deinit_post_process() + release_yolov8_model()
+================================================================================
+*/
+
 /*-------------------------------------------
                 Includes
 -------------------------------------------*/
@@ -32,6 +52,12 @@
 /*-------------------------------------------
                   Main Function
 -------------------------------------------*/
+/**
+ * @brief YOLOv8 单图检测主函数
+ * @param argc 参数个数，必须为3（程序名 + 模型路径 + 图片路径）
+ * @param argv 命令行参数：argv[1]=模型路径, argv[2]=图片路径
+ * @return 0成功，-1失败
+ */
 int main(int argc, char **argv)
 {
     if (argc != 3)

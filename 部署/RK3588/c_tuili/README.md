@@ -34,7 +34,6 @@
 ├── examples/yolov8/
 │   ├── cpp/
 │   │   ├── main.cc                 # 图片检测入口
-│   │   ├── main_video.cc           # 离线视频检测入口
 │   │   ├── main_stream.cc          # 实时摄像头 +推流入口(支持 HEADLESS 模式)
 │   │   ├── v4l2_capture.{h,cc}     # 直接 V4L2 采集 + MJPG/NV12/YUYV 解码
 │   │   ├── mjpeg_http_sink.{h,cc}  # MJPEG-over-HTTP 推流
@@ -46,7 +45,7 @@
 ├── utils/                          # imagedrawing / imageutils / fileutils
 └── install/                        # make install 输出（RPATH = $ORIGIN/../lib）
     └── rk3588_linux_aarch64/rknn_yolov8_demo/
-        ├── rknn_yolov8_demo{, _zero_copy, _video, _stream}
+        ├── rknn_yolov8_demo{, _stream}
         ├── run.sh                  # 启动脚本（解决 OpenCV .so 残留 RUNPATH）
         ├── mediamtx + mediamtx.yml # 流媒体服务器 + 配置
         ├── model/
@@ -174,16 +173,7 @@ HEADLESS（默认开启） 非 HEADLESS（ -DHEADLESS=OFF ） OpenCV 链接 只�
 ```bash
 ./rknn_yolov8_demo model/best.rknn model/bus.jpg
 ```
-### 2. 零拷贝图片检测（仅 rknpu2，不支持 rv1106/1103）
-```bash
-./rknn_yolov8_demo_zero_copy model/best.rknn model/bus.jpg
-```
-### 3. 离线视频检测
-```bash
-./rknn_yolov8_demo_video model/best.rknn input.mp4
-```
-输出写到 `input.avi`。可选项：`<input.mp4> <output.avi>`。
-### 4. 实时摄像头检测
+### 2. 实时摄像头检测
 ```bash
 ./rknn_yolov8_demo_stream <model> <camera_id|device_path> \
                           [width] [height] [fps] [save_path] [push_arg]
@@ -331,8 +321,7 @@ tailscale ip -4
 ## 修改点（相对上游）
 | 文件 | 改动 |
 | --- | --- |
-| `examples/yolov8/cpp/CMakeLists.txt` | 新增 `_video` 和 `_stream` 目标；`_stream` 静态链接 libturbojpeg.a；MPP/RTMP/RGA 自动检测链接；HEADLESS 模式选项（默认开启）；`install(CODE file(GLOB))` 精确打包 .so；运行时库打包到 install/lib；mediamtx + run.sh 打包 |
-| `examples/yolov8/cpp/main_video.cc` | 新增：视频文件逐帧推理 + 写视频 |
+| `examples/yolov8/cpp/CMakeLists.txt` | 新增 `_stream` 目标；`_stream` 静态链接 libturbojpeg.a；MPP/RTMP/RGA 自动检测链接；HEADLESS 模式选项（默认开启）；`install(CODE file(GLOB))` 精确打包 .so；运行时库打包到 install/lib；mediamtx + run.sh 打包；OpenSSL 链接修复（避免误匹配 NSS 的 libssl3.so，glob 兜底定位 libssl.so.3/libcrypto.so.3） |
 | `examples/yolov8/cpp/main_stream.cc` | 新增：实时摄像头 + 预览 + 录像 + MJPEG/RTMP 双模式推流；HEADLESS 条件编译 |
 | `examples/yolov8/cpp/v4l2_capture.{h,cc}` | 新增：直接 V4L2 采集（绕开 libv4l2）+ libturbojpeg 解码 + Multi-planar NV12/YUYV/UYVY 支持（MIPI RKISP）；YUV→RGB 用 `cv::cvtColor` 替代手写循环；`poll()` 替代 `select()`；条件 `create()` 避免重复分配 |
 | `examples/yolov8/cpp/mjpeg_http_sink.{h,cc}` | 新增：MJPEG-over-HTTP 推流（兼容 mjpg_streamer） |

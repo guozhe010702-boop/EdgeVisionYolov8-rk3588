@@ -12,37 +12,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #ifndef _YOLOV8_H_
 #define _YOLOV8_H_
 
 #include "rknn_api.h"
 #include "common.h"
 
-#if defined(RV1106_1103) 
-    typedef struct {
-        char *dma_buf_virt_addr;
-        int dma_buf_fd;
-        int size;
-    }rknn_dma_buf;
+#if defined(RV1106_1103)
+typedef struct
+{
+    char *dma_buf_virt_addr;
+    int dma_buf_fd;
+    int size;
+} rknn_dma_buf;
 #endif
 
-typedef struct {
+typedef struct
+{
     rknn_context rknn_ctx;
     rknn_input_output_num io_num;
-    rknn_tensor_attr* input_attrs;
-    rknn_tensor_attr* output_attrs;
+    rknn_tensor_attr *input_attrs;
+    rknn_tensor_attr *output_attrs;
 #if defined(RV1106_1103)
     // RV1106/1103 走 DMA 路径, mem 自己 alloc
-    rknn_tensor_mem* input_mems[1];
-    rknn_tensor_mem* output_mems[9];
+    rknn_tensor_mem *input_mems[1];
+    rknn_tensor_mem *output_mems[9];
     rknn_dma_buf img_dma_buf;
 #elif defined(ZERO_COPY)
     // 普通 rknpu2 芯片走 NPU 零拷贝, mem 绑到 NPU DMA 内存
-    rknn_tensor_mem* input_mems[1];
-    rknn_tensor_mem* output_mems[9];
-    rknn_tensor_attr* input_native_attrs;
-    rknn_tensor_attr* output_native_attrs;
+    rknn_tensor_mem *input_mems[1];
+    rknn_tensor_mem *output_mems[9];
+    rknn_tensor_attr *input_native_attrs;
+    rknn_tensor_attr *output_native_attrs;
 #endif
     // 默认分支 (普通 rknpu2 + 非 zero_copy, 如 video 目标): 没有 mem 字段
     // yolov8.cc 内部用 rknn_inputs_set / rknn_outputs_get 处理 IO
@@ -54,11 +55,10 @@ typedef struct {
 
 #include "postprocess.h"
 
+int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx);
 
-int init_yolov8_model(const char* model_path, rknn_app_context_t* app_ctx);
+int release_yolov8_model(rknn_app_context_t *app_ctx);
 
-int release_yolov8_model(rknn_app_context_t* app_ctx);
+int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, object_detect_result_list *od_results);
 
-int inference_yolov8_model(rknn_app_context_t* app_ctx, image_buffer_t* img, object_detect_result_list* od_results);
-
-#endif //_RKNN_DEMO_YOLOV8_H_
+#endif

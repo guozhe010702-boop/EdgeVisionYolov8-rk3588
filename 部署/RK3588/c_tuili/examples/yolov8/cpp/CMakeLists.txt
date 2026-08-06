@@ -65,76 +65,10 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 
-# Currently zero copy only supports rknpu2, v1103/rv1103b/rv1106 supports zero copy by default
-if (NOT (TARGET_SOC STREQUAL "rv1106" OR TARGET_SOC STREQUAL "rv1103" OR TARGET_SOC STREQUAL "rk1808" 
-    OR TARGET_SOC STREQUAL "rv1109" OR TARGET_SOC STREQUAL "rv1126" OR TARGET_SOC STREQUAL "rv1103b"))
-    add_executable(${PROJECT_NAME}_zero_copy
-        main.cc
-        postprocess.cc
-        rknpu2/yolov8_zero_copy.cc
-    )
-
-    target_compile_definitions(${PROJECT_NAME}_zero_copy PRIVATE ZERO_COPY)
-
-    target_link_libraries(${PROJECT_NAME}_zero_copy
-        imageutils
-        fileutils
-        imagedrawing    
-        ${LIBRKNNRT}
-        dl
-    )
-
-    if (CMAKE_SYSTEM_NAME STREQUAL "Android")
-        target_link_libraries(${PROJECT_NAME}_zero_copy
-        log
-    )
-    endif()
-
-    if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        set(THREADS_PREFER_PTHREAD_FLAG ON)
-        find_package(Threads REQUIRED)
-        target_link_libraries(${PROJECT_NAME}_zero_copy Threads::Threads)
-    endif()
-
-    target_include_directories(${PROJECT_NAME}_zero_copy PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${LIBRKNNRT_INCLUDES}
-    )
-    install(TARGETS ${PROJECT_NAME}_zero_copy DESTINATION .)
-endif()
-
-# 离线视频检测 Demo (使用 3rdparty 中的 OpenCV 解码视频)
-add_executable(${PROJECT_NAME}_video
-    main_video.cc
-    postprocess.cc
-    ${rknpu_yolov8_file}
-)
-
-target_link_libraries(${PROJECT_NAME}_video
-    imageutils
-    fileutils
-    imagedrawing
-    ${OPENCV_LIBS}
-    ${LIBRKNNRT}
-    dl
-)
-
-if (CMAKE_SYSTEM_NAME STREQUAL "Android")
-    target_link_libraries(${PROJECT_NAME}_video log)
-endif()
-
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(THREADS_PREFER_PTHREAD_FLAG ON)
-    find_package(Threads REQUIRED)
-    target_link_libraries(${PROJECT_NAME}_video Threads::Threads)
-endif()
-
-target_include_directories(${PROJECT_NAME}_video PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${LIBRKNNRT_INCLUDES}
-    ${OPENCV_INCLUDE_DIR}
-)
-install(TARGETS ${PROJECT_NAME}_video DESTINATION .)
+# 已移除 _zero_copy 和 _video 两个目标:
+#   - _zero_copy: 零拷贝图片检测, 与主 demo 功能重复, 已删除目标 (rknpu2/yolov8_zero_copy.cc 保留, _stream 仍在用)
+#   - _video:     离线视频检测, 依赖 OpenCV videoio→imgcodecs→libpng12, Ubuntu 22.04 无 libpng12 导致链接失败, 功能废弃
+# 注意: rknpu2/yolov8_zero_copy.cc 不可删除, _stream 目标 (见下方) 依赖它做 NPU 零拷贝推理
 
 # 实时视频检测 Demo (摄像头)
 # 自带 V4L2 采集 (v4l2_capture.cc), 不依赖系统 libv4l2, MJPG 解码走 3rdparty/jpeg_turbo
@@ -250,7 +184,44 @@ endif()
 
 # MPP/RTMP 链接 + 运行时库打包 (仅 HAVE_MPP_RTMP 时)
 if (HAVE_MPP_RTMP)
-    target_link_libraries(${PROJECT_NAME}_stream ${MPP_LIBRARY} ${RTMP_LIBRARY} ssl crypto)
+    # 定位 OpenSSL 运行时库 (librtmp 依赖 libssl/libcrypto)
+    # 注意1: NAMES 不能含 ssl3, 否则 find_library 会误匹配到 NSS 的 libssl3.so (libnss3 包, 非 OpenSSL)
+    # 注意2: find_library 默认找不到带版本号的 libssl.so.3/libcrypto.so.3
+    #        (只装 libssl3 运行时未装 libssl-dev 时), 用 file(GLOB) 在标准路径兜底
+    #        定位 OpenSSL 3 真身 (libssl3 包提供的 libssl.so.3/libcrypto.so.3)
+    get_filename_component(MPP_LIB_DIR ${MPP_LIBRARY} DIRECTORY)
+    find_library(SSL_LIBRARY
+        NAMES ssl
+        PATHS ${MPP_LIB_DIR} /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf /usr/lib
+    )
+    if (NOT SSL_LIBRARY)
+        file(GLOB _ssl_rt
+            /usr/lib/aarch64-linux-gnu/libssl.so.3*
+            /usr/lib/arm-linux-gnueabihf/libssl.so.3*
+            /usr/lib/libssl.so.3*)
+        if (_ssl_rt)
+            list(GET _ssl_rt 0 SSL_LIBRARY)
+        endif()
+    endif()
+    find_library(CRYPTO_LIBRARY
+        NAMES crypto
+        PATHS ${MPP_LIB_DIR} /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf /usr/lib
+    )
+    if (NOT CRYPTO_LIBRARY)
+        file(GLOB _crypto_rt
+            /usr/lib/aarch64-linux-gnu/libcrypto.so.3*
+            /usr/lib/arm-linux-gnueabihf/libcrypto.so.3*
+            /usr/lib/libcrypto.so.3*)
+        if (_crypto_rt)
+            list(GET _crypto_rt 0 CRYPTO_LIBRARY)
+        endif()
+    endif()
+    message(STATUS "OpenSSL for RTMP: SSL=${SSL_LIBRARY} CRYPTO=${CRYPTO_LIBRARY}")
+    if (NOT SSL_LIBRARY OR NOT CRYPTO_LIBRARY)
+        message(FATAL_ERROR "OpenSSL libssl/libcrypto not found. Install libssl-dev or ensure libssl3 runtime (libssl.so.3/libcrypto.so.3) present.")
+    endif()
+
+    target_link_libraries(${PROJECT_NAME}_stream ${MPP_LIBRARY} ${RTMP_LIBRARY} ${SSL_LIBRARY} ${CRYPTO_LIBRARY})
     if (MPP_INCLUDE_DIR)
         target_include_directories(${PROJECT_NAME}_stream PRIVATE ${MPP_INCLUDE_DIR})
     else()
@@ -262,17 +233,7 @@ if (HAVE_MPP_RTMP)
 
     # 将 MPP/RTMP/SSL/RGA 运行时库打包到 install/lib
     # 使用 install(CODE) + file(GLOB) 精确安装 .so 文件 (含符号链接), 避免 install(DIRECTORY) 把整个系统 lib 目录树拷贝进来
-    get_filename_component(MPP_LIB_DIR ${MPP_LIBRARY} DIRECTORY)
     get_filename_component(RTMP_LIB_DIR ${RTMP_LIBRARY} DIRECTORY)
-
-    find_library(SSL_LIBRARY
-        NAMES ssl ssl3
-        PATHS ${MPP_LIB_DIR} /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf /usr/lib
-    )
-    find_library(CRYPTO_LIBRARY
-        NAMES crypto crypto3
-        PATHS ${MPP_LIB_DIR} /usr/lib/aarch64-linux-gnu /usr/lib/arm-linux-gnueabihf /usr/lib
-    )
 
     # MPP .so (librockchip_mpp.so → .so.1 → .so.0)
     install(CODE "

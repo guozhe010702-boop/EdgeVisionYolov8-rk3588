@@ -80,7 +80,7 @@
 #endif
 
 #if defined(RV1106_1103)
-    #include "dma_alloc.hpp"
+#include "dma_alloc.hpp"
 #endif
 
 // Ctrl+C / kill 触发的优雅退出标志 (async-signal-safe, 仅置位)
@@ -96,20 +96,6 @@ static void on_sigint(int signo)
     g_stop_requested.store(1);
 }
 
-/*-------------------------------------------
-        实时视频检测 (摄像头)
-        用法: ./rknn_yolov8_demo_stream <model_path> <camera_id|device_path>
-                                    [width] [height] [fps] [save_path] [push_port|rtmp_url]
-        示例 (USB 摄像头):
-              ./rknn_yolov8_demo_stream model/best.rknn 0
-              ./rknn_yolov8_demo_stream model/best.rknn /dev/video0 1280 720 30 out.mp4
-              ./rknn_yolov8_demo_stream model/best.rknn /dev/video0 0 0 0 "" 8080
-              ./rknn_yolov8_demo_stream model/best.rknn /dev/video0 0 0 0 "" rtmp://127.0.0.1:1935/live/stream
-        示例 (MIPI OV13855, 需要 opi5max-cam0 overlay):
-              ./rknn_yolov8_demo_stream model/best.rknn /dev/video-camera0 0 0 0 "" 8080
-              ./rknn_yolov8_demo_stream model/best.rknn /dev/video11 0 0 0 "" rtmp://127.0.0.1:1936/live/stream
-        按 'q' 退出预览
--------------------------------------------*/
 /**
  * @brief 实时摄像头检测核心循环，逐帧采集→推理→绘制→推流
  * @param rknn_app_ctx RKNN 应用上下文
@@ -142,10 +128,11 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
         return -1;
     }
 
-    int frame_w   = cap.width();
-    int frame_h   = cap.height();
-    double fps    = cap.fps();
-    if (fps <= 0) fps = 30.0;  // RKISP 等设备可能不支持帧率查询, 默认 30
+    int frame_w = cap.width();
+    int frame_h = cap.height();
+    double fps = cap.fps();
+    if (fps <= 0)
+        fps = 30.0; // RKISP 等设备可能不支持帧率查询, 默认 30
 
 #ifndef HEADLESS
     cv::VideoWriter writer;
@@ -159,7 +146,7 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
         if (!writer.isOpened())
         {
             printf("open output video fail! path=%s (continue without recording)\n", save_path);
-            save_enabled = 0;  // 关掉录制, 继续检测 + 推流
+            save_enabled = 0; // 关掉录制, 继续检测 + 推流
         }
         else
         {
@@ -183,7 +170,7 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
 
     // ==================== 优化: 预分配复用 Mat ====================
     // 整段循环共用 3 个 Mat, 避免每帧 new/delete / 重新分配
-    cv::Mat rgb_frame;  // V4L2 直出 RGB (TJPF_RGB), 同时也是绘制画布
+    cv::Mat rgb_frame; // V4L2 直出 RGB (TJPF_RGB), 同时也是绘制画布
     cv::Mat bgr_for_save;
 #ifndef HEADLESS
     cv::Mat bgr_for_show;
@@ -202,9 +189,9 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
     int frame_index = 0;
     int ret = 0;
     bool loop = true;
-    int  v4l2_fail_streak = 0;  // 连续 V4L2 失败计数, 短暂抖动不退出
-    const int v4l2_retry_us = 33000;  // 重试间隔 ~33ms
-    const int v4l2_max_fail_time_us = 2000000;  // 连续失败 2 秒才真退出
+    int v4l2_fail_streak = 0;                  // 连续 V4L2 失败计数, 短暂抖动不退出
+    const int v4l2_retry_us = 33000;           // 重试间隔 ~33ms
+    const int v4l2_max_fail_time_us = 2000000; // 连续失败 2 秒才真退出
 
     while (loop)
     {
@@ -247,14 +234,14 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
 
         image_buffer_t src_image;
         memset(&src_image, 0, sizeof(image_buffer_t));
-        src_image.width         = rgb_frame.cols;
-        src_image.height        = rgb_frame.rows;
-        src_image.width_stride  = rgb_frame.cols;
+        src_image.width = rgb_frame.cols;
+        src_image.height = rgb_frame.rows;
+        src_image.width_stride = rgb_frame.cols;
         src_image.height_stride = rgb_frame.rows;
-        src_image.format        = IMAGE_FORMAT_RGB888;
-        src_image.size          = (int)(rgb_frame.total() * rgb_frame.elemSize());
-        src_image.virt_addr     = rgb_frame.data;
-        src_image.fd            = -1;
+        src_image.format = IMAGE_FORMAT_RGB888;
+        src_image.size = (int)(rgb_frame.total() * rgb_frame.elemSize());
+        src_image.virt_addr = rgb_frame.data;
+        src_image.fd = -1;
 
 #if defined(RV1106_1103)
         rknn_app_ctx->img_dma_buf.size = src_image.size;
@@ -270,7 +257,7 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
         memcpy(rknn_app_ctx->img_dma_buf.dma_buf_virt_addr, src_image.virt_addr, src_image.size);
         dma_sync_cpu_to_device(rknn_app_ctx->img_dma_buf.dma_buf_fd);
         src_image.virt_addr = (unsigned char *)rknn_app_ctx->img_dma_buf.dma_buf_virt_addr;
-        src_image.fd        = rknn_app_ctx->img_dma_buf.dma_buf_fd;
+        src_image.fd = rknn_app_ctx->img_dma_buf.dma_buf_fd;
 #endif
 
         object_detect_result_list od_results;
@@ -296,10 +283,14 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
             int x2 = det->box.right;
             int y2 = det->box.bottom;
 
-            if (x1 < 0) x1 = 0;
-            if (y1 < 0) y1 = 0;
-            if (x2 > src_image.width)  x2 = src_image.width;
-            if (y2 > src_image.height) y2 = src_image.height;
+            if (x1 < 0)
+                x1 = 0;
+            if (y1 < 0)
+                y1 = 0;
+            if (x2 > src_image.width)
+                x2 = src_image.width;
+            if (y2 > src_image.height)
+                y2 = src_image.height;
 
             draw_rectangle(&src_image, x1, y1, x2 - x1, y2 - y1, COLOR_BLUE, 3);
             sprintf(text, "%s %.1f%%", coco_cls_to_name(det->cls_id), det->prop * 100);
@@ -319,7 +310,7 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
 
             if (show_window)
             {
-                bgr_for_show = bgr_for_save;  // 浅拷贝 (共享数据, 零开销)
+                bgr_for_show = bgr_for_save; // 浅拷贝 (共享数据, 零开销)
                 cv::imshow("yolov8_stream", bgr_for_show);
                 int key = cv::waitKey(1);
                 if (key == 'q' || key == 'Q' || key == 27 /* ESC */)
@@ -355,8 +346,10 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
 
     printf("stream done, total frames=%d\n", frame_index);
 #ifndef HEADLESS
-    if (show_window) cv::destroyAllWindows();
-    if (save_enabled && writer.isOpened()) writer.release();
+    if (show_window)
+        cv::destroyAllWindows();
+    if (save_enabled && writer.isOpened())
+        writer.release();
 #endif
     return ret;
 }
@@ -389,15 +382,30 @@ int main(int argc, char **argv)
     }
 
     const char *model_path = argv[1];
-    const char *source     = argv[2];
+    const char *source = argv[2];
 
     // 参数校验: width/height/fps 必须为非负整数
-    int req_w  = 0, req_h = 0, req_fps = 0;
-    if (argc >= 4) { req_w  = atoi(argv[3]); if (req_w < 0) req_w = 0; }
-    if (argc >= 5) { req_h  = atoi(argv[4]); if (req_h < 0) req_h = 0; }
-    if (argc >= 6) { req_fps= atoi(argv[5]); if (req_fps< 0) req_fps= 0; }
+    int req_w = 0, req_h = 0, req_fps = 0;
+    if (argc >= 4)
+    {
+        req_w = atoi(argv[3]);
+        if (req_w < 0)
+            req_w = 0;
+    }
+    if (argc >= 5)
+    {
+        req_h = atoi(argv[4]);
+        if (req_h < 0)
+            req_h = 0;
+    }
+    if (argc >= 6)
+    {
+        req_fps = atoi(argv[5]);
+        if (req_fps < 0)
+            req_fps = 0;
+    }
     const char *save_path = (argc >= 7) ? argv[6] : NULL;
-    const char *push_arg  = (argc >= 8) ? argv[7] : NULL;
+    const char *push_arg = (argc >= 8) ? argv[7] : NULL;
 
     // 预览窗口: 只要有 DISPLAY 环境变量就打开; 在没有显示的板子上保持关闭
     int show_window = (getenv("DISPLAY") != NULL) ? 1 : 0;
@@ -415,8 +423,8 @@ int main(int argc, char **argv)
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = on_sigint;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;  // 不要 SA_RESTART, 让 accept() 立即被 EINTR 打断
-    sigaction(SIGINT,  &sa, nullptr);
+    sa.sa_flags = 0; // 不要 SA_RESTART, 让 accept() 立即被 EINTR 打断
+    sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
     // SIGPIPE 写到已关闭的 socket 时默认终止进程, 这里忽略避免杀进程
     signal(SIGPIPE, SIG_IGN);
@@ -424,9 +432,9 @@ int main(int argc, char **argv)
     // 推流: 根据 push_arg 判断是 MJPEG (纯数字端口) 还是 RTMP (rtmp:// URL)
     MjpegHttpSink *mjpeg_sink = nullptr;
 #ifdef HAVE_MPP_RTMP
-    RtmpSink      *rtmp_sink  = nullptr;
+    RtmpSink *rtmp_sink = nullptr;
 #else
-    void          *rtmp_sink  = nullptr;
+    void *rtmp_sink = nullptr;
 #endif
 
     if (push_arg != NULL && push_arg[0] != '\0')
@@ -477,9 +485,17 @@ int main(int argc, char **argv)
     {
         printf("init_yolov8_model fail! ret=%d model_path=%s\n", ret, model_path);
         deinit_post_process();
-        if (mjpeg_sink) { mjpeg_sink->stop(); delete mjpeg_sink; }
+        if (mjpeg_sink)
+        {
+            mjpeg_sink->stop();
+            delete mjpeg_sink;
+        }
 #ifdef HAVE_MPP_RTMP
-        if (rtmp_sink)  { rtmp_sink->close(); delete rtmp_sink; }
+        if (rtmp_sink)
+        {
+            rtmp_sink->close();
+            delete rtmp_sink;
+        }
 #endif
         return -1;
     }

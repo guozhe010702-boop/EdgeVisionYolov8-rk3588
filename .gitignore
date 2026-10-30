@@ -90,3 +90,8 @@ runs/
 build/
 .vscode/
 .trae/
+
+# EVM3588 local build and private validation artifacts
+/.cache/
+/releases/
+/local/

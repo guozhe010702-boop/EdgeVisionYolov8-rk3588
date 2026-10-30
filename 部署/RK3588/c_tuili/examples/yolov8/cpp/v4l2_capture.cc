@@ -76,7 +76,7 @@ void V4L2Capture::close()
             {
                 for (int p = 0; p < 2; p++)
                 {
-                    if (buffers_[i].start[p])
+                    if (buffers_[i].start[p] && buffers_[i].start[p] != MAP_FAILED)
                         munmap(buffers_[i].start[p], buffers_[i].length[p]);
                 }
             }
@@ -136,8 +136,14 @@ int V4L2Capture::try_format(unsigned int pixfmt, const char *name, int w, int h,
         width_  = (int)fmt.fmt.pix_mp.width;
         height_ = (int)fmt.fmt.pix_mp.height;
         n_planes_ = (int)fmt.fmt.pix_mp.num_planes;
+        if (n_planes_ < 1 || n_planes_ > 2) {
+            printf("[v4l2] unsupported plane count: %d\n", n_planes_);
+            return -1;
+        }
         bytesperline_ = (int)fmt.fmt.pix_mp.plane_fmt[0].bytesperline;
         if (bytesperline_ <= 0) bytesperline_ = width_;
+        uv_bytesperline_ = n_planes_ == 2 ? (int)fmt.fmt.pix_mp.plane_fmt[1].bytesperline : bytesperline_;
+        if (uv_bytesperline_ <= 0) uv_bytesperline_ = bytesperline_;
         pixfmt_ = fmt.fmt.pix_mp.pixelformat;
     }
     else
@@ -165,7 +171,8 @@ int V4L2Capture::try_format(unsigned int pixfmt, const char *name, int w, int h,
         height_ = (int)fmt.fmt.pix.height;
         n_planes_ = 1;
         bytesperline_ = (int)fmt.fmt.pix.bytesperline;
-        if (bytesperline_ <= 0) bytesperline_ = width_ * 2;  // YUYV 安全兜底
+        if (bytesperline_ <= 0) bytesperline_ = pixfmt == V4L2_PIX_FMT_NV12 ? width_ : width_ * 2;
+        uv_bytesperline_ = bytesperline_;
         pixfmt_ = fmt.fmt.pix.pixelformat;
     }
 
@@ -430,12 +437,13 @@ int V4L2Capture::open(const char *dev, int req_w, int req_h, int req_fps)
         return -1;
     }
 
-    if (cap.capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE)
+    unsigned int capabilities = (cap.capabilities & V4L2_CAP_DEVICE_CAPS) ? cap.device_caps : cap.capabilities;
+    if (capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE)
     {
         multiplanar_ = true;
         printf("[v4l2] %s: Multi-planar capture device\n", dev);
     }
-    else if (cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)
+    else if (capabilities & V4L2_CAP_VIDEO_CAPTURE)
     {
         multiplanar_ = false;
         printf("[v4l2] %s: Single-planar capture device\n", dev);
@@ -449,26 +457,26 @@ int V4L2Capture::open(const char *dev, int req_w, int req_h, int req_fps)
         return -1;
     }
 
-    if (!(cap.capabilities & V4L2_CAP_STREAMING))
+    if (!(capabilities & V4L2_CAP_STREAMING))
     {
         printf("[v4l2] %s does not support streaming I/O\n", dev);
         close();
         return -1;
     }
 
-    // 格式优先级: MJPG → NV12 → YUYV → UYVY
-    // USB 摄像头会命中 MJPG; MIPI RKISP 会命中 NV12
+    // NV12M is a distinct fourcc (NM12) used by the EVM3588 ISP.
     int fmt_ok = -1;
     if ((fmt_ok = try_format(V4L2_PIX_FMT_MJPEG, "MJPG", req_w, req_h, req_fps)) != 0)
     {
         printf("[v4l2] MJPG not available, trying NV12...\n");
         if ((fmt_ok = try_format(V4L2_PIX_FMT_NV12,  "NV12", req_w, req_h, req_fps)) != 0)
         {
-            printf("[v4l2] NV12 not available, trying YUYV...\n");
-            if ((fmt_ok = try_format(V4L2_PIX_FMT_YUYV,  "YUYV", req_w, req_h, req_fps)) != 0)
+            if (multiplanar_)
+                fmt_ok = try_format(V4L2_PIX_FMT_NV12M, "NV12M", req_w, req_h, req_fps);
+            if (fmt_ok != 0)
             {
-                printf("[v4l2] YUYV not available, trying UYVY...\n");
-                fmt_ok = try_format(V4L2_PIX_FMT_UYVY,  "UYVY", req_w, req_h, req_fps);
+                if ((fmt_ok = try_format(V4L2_PIX_FMT_YUYV, "YUYV", req_w, req_h, req_fps)) != 0)
+                    fmt_ok = try_format(V4L2_PIX_FMT_UYVY, "UYVY", req_w, req_h, req_fps);
             }
         }
     }
@@ -537,24 +545,47 @@ int V4L2Capture::read(cv::Mat &frame)
         return -1;
     }
 
-    // 按格式解码 (OpenCV cvtColor 内部有 NEON/SSE 优化, 比手写循环快)
-    if (pixfmt_ == V4L2_PIX_FMT_MJPEG)
-    {
-        size_t data_len = multiplanar_ ? planes[0].bytesused : buf.bytesused;
-        decode_mjpg(buffers_[buf.index].start[0], data_len, frame);
+    if (buf.index >= (unsigned)n_buffers_) {
+        printf("[v4l2] driver returned invalid buffer index %u\n", buf.index);
+        frame.release();
+        return -1;
     }
-    else if (pixfmt_ == V4L2_PIX_FMT_NV12)
+    const unsigned char *data[2] = {nullptr, nullptr};
+    size_t lengths[2] = {0, 0};
+    bool valid = !(buf.flags & V4L2_BUF_FLAG_ERROR);
+    for (int p = 0; p < n_planes_; ++p) {
+        size_t used = multiplanar_ ? planes[p].bytesused : buf.bytesused;
+        size_t offset = multiplanar_ ? planes[p].data_offset : 0;
+        if (offset > used || used > buffers_[buf.index].length[p]) {
+            valid = false;
+            break;
+        }
+        data[p] = (const unsigned char *)buffers_[buf.index].start[p] + offset;
+        lengths[p] = used - offset;
+    }
+    // Always requeue after malformed data or an OpenCV conversion exception.
+    try {
+    if (!valid) {
+        printf("[v4l2] rejected erroneous or truncated buffer\n");
+        frame.release();
+    }
+    // 按格式解码 (OpenCV cvtColor 内部有 NEON/SSE 优化, 比手写循环快)
+    else if (pixfmt_ == V4L2_PIX_FMT_MJPEG)
+    {
+        decode_mjpg(data[0], lengths[0], frame);
+    }
+    else if (pixfmt_ == V4L2_PIX_FMT_NV12 || pixfmt_ == V4L2_PIX_FMT_NV12M)
     {
         // NV12 → RGB: cvtColorTwoPlane 接受分离的 Y/UV Mat (支持 stride)
-        const unsigned char *y_data = (const unsigned char *)buffers_[buf.index].start[0];
+        const unsigned char *y_data = data[0];
         const unsigned char *uv_data;
         int y_stride = bytesperline_;
         int uv_stride;
 
         if (multiplanar_ && n_planes_ == 2)
         {
-            uv_data = (const unsigned char *)buffers_[buf.index].start[1];
-            uv_stride = y_stride;  // NV12: UV stride == Y stride
+            uv_data = data[1];
+            uv_stride = uv_bytesperline_;
         }
         else
         {
@@ -562,13 +593,26 @@ int V4L2Capture::read(cv::Mat &frame)
             uv_stride = y_stride;
         }
 
-        cv::Mat y_mat(height_, width_, CV_8UC1, (void *)y_data, y_stride);
-        cv::Mat uv_mat(height_ / 2, width_ / 2, CV_8UC2, (void *)uv_data, uv_stride);
-        cv::cvtColorTwoPlane(y_mat, uv_mat, frame, cv::COLOR_YUV2RGB_NV12);
+        size_t y_need = height_ > 0 ? (size_t)(height_ - 1) * y_stride + width_ : 0;
+        size_t uv_need = height_ >= 2 ? (size_t)(height_ / 2 - 1) * uv_stride + width_ : 0;
+        bool size_ok = width_ > 0 && height_ > 0 && !(width_ % 2) && !(height_ % 2)
+            && y_stride >= width_ && uv_stride >= width_;
+        if (multiplanar_ && n_planes_ == 2)
+            size_ok = size_ok && y_need <= lengths[0] && uv_need <= lengths[1];
+        else
+            size_ok = size_ok && (size_t)y_stride * height_ + uv_need <= lengths[0];
+        if (size_ok) {
+            cv::Mat y_mat(height_, width_, CV_8UC1, (void *)y_data, y_stride);
+            cv::Mat uv_mat(height_ / 2, width_ / 2, CV_8UC2, (void *)uv_data, uv_stride);
+            cv::cvtColorTwoPlane(y_mat, uv_mat, frame, cv::COLOR_YUV2RGB_NV12);
+        } else {
+            printf("[v4l2] rejected invalid NV12 dimensions/stride/payload\n");
+            frame.release();
+        }
     }
     else if (pixfmt_ == V4L2_PIX_FMT_YUYV)
     {
-        size_t data_len = multiplanar_ ? planes[0].bytesused : buf.bytesused;
+        size_t data_len = lengths[0];
         int stride = bytesperline_ > 0 ? bytesperline_ : width_ * 2;
         if ((size_t)stride * (size_t)height_ > data_len)
         {
@@ -577,13 +621,13 @@ int V4L2Capture::read(cv::Mat &frame)
         }
         else
         {
-            cv::Mat yuyv_mat(height_, width_, CV_8UC2, buffers_[buf.index].start[0], stride);
+            cv::Mat yuyv_mat(height_, width_, CV_8UC2, (void *)data[0], stride);
             cv::cvtColor(yuyv_mat, frame, cv::COLOR_YUV2RGB_YUY2);
         }
     }
     else if (pixfmt_ == V4L2_PIX_FMT_UYVY)
     {
-        size_t data_len = multiplanar_ ? planes[0].bytesused : buf.bytesused;
+        size_t data_len = lengths[0];
         int stride = bytesperline_ > 0 ? bytesperline_ : width_ * 2;
         if ((size_t)stride * (size_t)height_ > data_len)
         {
@@ -592,13 +636,17 @@ int V4L2Capture::read(cv::Mat &frame)
         }
         else
         {
-            cv::Mat uyvy_mat(height_, width_, CV_8UC2, buffers_[buf.index].start[0], stride);
+            cv::Mat uyvy_mat(height_, width_, CV_8UC2, (void *)data[0], stride);
             cv::cvtColor(uyvy_mat, frame, cv::COLOR_YUV2RGB_UYVY);
         }
     }
     else
     {
         frame = cv::Mat();
+    }
+    } catch (const cv::Exception &error) {
+        printf("[v4l2] conversion failed: %s\n", error.what());
+        frame.release();
     }
 
     // 重新入队 (保留 DQBUF 返回的 buf.index)

@@ -136,11 +136,20 @@ int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx)
         dump_tensor_attr(&(output_attrs[i]));
     }
 
+    int classes=yolo_class_count(&io_num, output_attrs);
+    if (classes<1) {
+        printf("Unsupported YOLO output contract\n");
+        rknn_destroy(ctx);
+        return -1;
+    }
+    app_ctx->model_classes=classes;
+
     // Set to context
     app_ctx->rknn_ctx = ctx;
 
     // TODO
-    if (output_attrs[0].qnt_type == RKNN_TENSOR_QNT_AFFINE_ASYMMETRIC && output_attrs[0].type == RKNN_TENSOR_UINT8)
+    if (output_attrs[0].qnt_type == RKNN_TENSOR_QNT_AFFINE_ASYMMETRIC &&
+        (output_attrs[0].type == RKNN_TENSOR_UINT8 || output_attrs[0].type == RKNN_TENSOR_INT8))
     {
         app_ctx->is_quant = true;
     }
@@ -184,6 +193,7 @@ int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx)
  */
 int release_yolov8_model(rknn_app_context_t *app_ctx)
 {
+    free_model_labels(app_ctx);
     if (app_ctx->input_attrs != NULL)
     {
         free(app_ctx->input_attrs);
@@ -217,7 +227,7 @@ int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, obj
     rknn_input inputs[app_ctx->io_num.n_input];
     rknn_output outputs[app_ctx->io_num.n_output];
     const float nms_threshold = NMS_THRESH;      // Default NMS threshold
-    const float box_conf_threshold = BOX_THRESH; // Default box threshold
+    const float box_conf_threshold = app_ctx->confidence_threshold>0 ? app_ctx->confidence_threshold : BOX_THRESH;
     int bg_color = 114;
 
     if ((!app_ctx) || !(img) || (!od_results))
@@ -289,7 +299,7 @@ int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, obj
     }
 
     // Post Process
-    post_process(app_ctx, outputs, &letter_box, box_conf_threshold, nms_threshold, od_results);
+    ret=post_process(app_ctx, outputs, &letter_box, box_conf_threshold, nms_threshold, od_results);
 
     // Remeber to release rknn output
     rknn_outputs_release(app_ctx->rknn_ctx, app_ctx->io_num.n_output, outputs);

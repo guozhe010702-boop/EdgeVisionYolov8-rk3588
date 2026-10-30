@@ -37,6 +37,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <netinet/in.h>
@@ -177,7 +178,8 @@ int MjpegHttpSink::encode_and_broadcast(const cv::Mat &rgb, int quality)
 
     // TJFLAG_NOREALLOC: 复用 tj_buf_, 不再每帧 malloc/free
     // buffer 容量取 W*H*2 兜底 (RGB888 压缩后一般 < 100KB)
-    unsigned long need = (unsigned long)w * (unsigned long)h * 2;
+    unsigned long need = tjBufSize(w, h, TJSAMP_420);
+    if (need == (unsigned long)-1) return -1;
     if (need > tj_buf_size_)
     {
         if (tj_buf_) free(tj_buf_);
@@ -188,7 +190,7 @@ int MjpegHttpSink::encode_and_broadcast(const cv::Mat &rgb, int quality)
 
     unsigned long jpeg_size = 0;
     int tj_ret = tjCompress2((tjhandle)tj_,
-                             rgb.data, w, 0, h, TJPF_RGB,
+                             rgb.data, w, (int)rgb.step, h, TJPF_RGB,
                              &tj_buf_, &jpeg_size,
                              TJSAMP_420, quality,
                              TJFLAG_FASTDCT | TJFLAG_NOREALLOC);
@@ -262,8 +264,8 @@ int MjpegHttpSink::send_frame(int fd, const void *head, size_t hlen,
     iov[2].iov_base = (void *)tail;
     iov[2].iov_len  = 2;
 
-    // writev 原子性: 一次系统调用, 内核按顺序发, 客户端按顺序收
-    // 部分写 (EAGAIN) 视为慢, 整帧直接扔 (MJPEG 流允许丢帧)
+    // TCP writev is not atomic. EAGAIN before sending is a safe whole-frame
+    // skip, but a partial multipart frame must close the connection.
     ssize_t n = ::writev(fd, iov, 3);
     if (n < 0)
     {
@@ -271,7 +273,7 @@ int MjpegHttpSink::send_frame(int fd, const void *head, size_t hlen,
         return -1;
     }
     // writev 全部写完才算成功, 短写视为慢
-    if ((size_t)n < hlen + blen + 2) return 1;
+    if ((size_t)n < hlen + blen + 2) return -1;
     return 0;
 }
 
@@ -285,16 +287,25 @@ void MjpegHttpSink::handle_client(int fd)
     struct timeval tv = {2, 0};
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    // 关键: client fd 设非阻塞
-    // 否则 sender 线程 writev 在 TCP 发送缓冲满时会永久阻塞,
-    // 一个慢客户端会让所有客户端的画面都卡住
-    int flags = ::fcntl(fd, F_GETFL, 0);
-    if (flags >= 0) ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-
+    // Receive the complete request before enabling nonblocking streaming.
+    // An immediate nonblocking recv races clients whose GET arrives after accept.
     char req[2048] = {0};
-    int r = (int)::recv(fd, req, sizeof(req) - 1, 0);
-    if (r <= 0)
-    {
+    size_t received = 0;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!stop_flag_ && received < sizeof(req) - 1 && !strstr(req, "\r\n\r\n")
+           && std::chrono::steady_clock::now() < deadline) {
+        struct pollfd descriptor = {fd, POLLIN, 0};
+        int ready = ::poll(&descriptor, 1, 100);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready < 0) break;
+        if (ready == 0) continue;
+        int count = (int)::recv(fd, req + received, sizeof(req) - 1 - received, 0);
+        if (count < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        if (count <= 0) break;
+        received += count;
+        req[received] = '\0';
+    }
+    if (!strstr(req, "\r\n\r\n")) {
         ::close(fd);
         return;
     }
@@ -324,8 +335,15 @@ void MjpegHttpSink::handle_client(int fd)
         "Connection: close\r\n"
         "Content-Type: multipart/x-mixed-replace;boundary=" BOUNDARY "\r\n"
         "\r\n");
-    if (::send(fd, head, (size_t)hlen, 0) < 0)
+    struct timeval send_timeout = {2, 0};
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
+    if (::send(fd, head, (size_t)hlen, MSG_NOSIGNAL) != hlen)
     {
+        ::close(fd);
+        return;
+    }
+    int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
         ::close(fd);
         return;
     }

@@ -54,6 +54,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <atomic>
+#include <chrono>
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/core.hpp>
@@ -115,7 +116,9 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
                              const char *save_path,
                              int show_window,
                              MjpegHttpSink *mjpeg_sink,
-                             void *rtmp_sink_raw)
+                             void *rtmp_sink_raw,
+                             rknn_app_context_t *aux_ctx,
+                             int auxiliary_class)
 {
 #ifdef HAVE_MPP_RTMP
     RtmpSink *rtmp_sink = static_cast<RtmpSink *>(rtmp_sink_raw);
@@ -187,6 +190,9 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
 #endif
 
     int frame_index = 0;
+    auto metric_time = std::chrono::steady_clock::now();
+    int metric_frames = 0;
+    double metric_detect_ms = 0;
     int ret = 0;
     bool loop = true;
     int v4l2_fail_streak = 0;                  // 连续 V4L2 失败计数, 短暂抖动不退出
@@ -261,7 +267,14 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
 #endif
 
         object_detect_result_list od_results;
+        object_detect_result_list aux_results = {};
+        auto detect_started = std::chrono::steady_clock::now();
         int inf_ret = inference_yolov8_model(rknn_app_ctx, &src_image, &od_results);
+        // Both contexts see the same unpainted original frame.
+        if (inf_ret == 0 && aux_ctx)
+            inf_ret = inference_yolov8_model(aux_ctx, &src_image, &aux_results);
+        metric_detect_ms += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - detect_started).count();
 #if defined(RV1106_1103)
         dma_buf_free(rknn_app_ctx->img_dma_buf.size,
                      &rknn_app_ctx->img_dma_buf.dma_buf_fd,
@@ -293,13 +306,26 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
                 y2 = src_image.height;
 
             draw_rectangle(&src_image, x1, y1, x2 - x1, y2 - y1, COLOR_BLUE, 3);
-            sprintf(text, "%s %.1f%%", coco_cls_to_name(det->cls_id), det->prop * 100);
+            snprintf(text, sizeof(text), "%s %.1f%%", model_class_name(rknn_app_ctx, det->cls_id), det->prop * 100);
             draw_text(&src_image, text, x1, (y1 - 20 > 0 ? y1 - 20 : 0), COLOR_RED, 10);
+        }
+        int auxiliary_objects=0;
+        for (int i=0; aux_ctx && i<aux_results.count; ++i) {
+            object_detect_result *det=&aux_results.results[i];
+            if (det->cls_id != auxiliary_class) continue;
+            ++auxiliary_objects;
+            int x1=det->box.left<0 ? 0 : det->box.left;
+            int y1=det->box.top<0 ? 0 : det->box.top;
+            int x2=det->box.right>src_image.width ? src_image.width : det->box.right;
+            int y2=det->box.bottom>src_image.height ? src_image.height : det->box.bottom;
+            draw_rectangle(&src_image, x1, y1, x2-x1, y2-y1, COLOR_GREEN, 3);
+            snprintf(text, sizeof(text), "%s %.1f%%", model_class_name(aux_ctx, det->cls_id), det->prop*100);
+            draw_text(&src_image, text, x1, y1>20 ? y1-20 : 0, COLOR_GREEN, 10);
         }
 
         if (frame_index % (fps > 0 ? (int)fps : 30) == 0)
         {
-            printf("frame %d done, %d objects detected\n", frame_index, od_results.count);
+            printf("frame %d done, %d objects detected\n", frame_index, od_results.count+auxiliary_objects);
         }
 
         // 显示 + 保存: RGB→BGR 只做一次, 两处复用 (HEADLESS 模式下 show_window/save_enabled 均为 0, 此块不执行)
@@ -342,6 +368,28 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
 #endif
 
         frame_index++;
+        metric_frames++;
+        auto metric_now = std::chrono::steady_clock::now();
+        double metric_seconds = std::chrono::duration<double>(metric_now - metric_time).count();
+        if (metric_seconds >= 1.0) {
+            printf("METRIC {\"frames\":%d,\"interval_s\":%.6f,\"fps\":%.3f,\"detect_ms\":%.3f,\"objects\":%d,\"primary_objects\":%d,\"helmet_objects\":%d}\n",
+                frame_index, metric_seconds, metric_frames / metric_seconds,
+                metric_detect_ms / metric_frames, od_results.count+auxiliary_objects, od_results.count, auxiliary_objects);
+            printf("OBJECTS {\"frame\":%d,\"primary\":[", frame_index);
+            for (int j=0; j<od_results.count; ++j)
+                printf("%s{\"class_id\":%d,\"score\":%.4f}", j ? "," : "", od_results.results[j].cls_id, od_results.results[j].prop);
+            printf("],\"auxiliary\":[");
+            int printed=0;
+            for (int j=0; aux_ctx && j<aux_results.count; ++j) {
+                if (aux_results.results[j].cls_id!=auxiliary_class) continue;
+                printf("%s{\"class_id\":%d,\"score\":%.4f}", printed++ ? "," : "", aux_results.results[j].cls_id, aux_results.results[j].prop);
+            }
+            printf("]}\n");
+            fflush(stdout);
+            metric_frames = 0;
+            metric_detect_ms = 0;
+            metric_time = metric_now;
+        }
     }
 
     printf("stream done, total frames=%d\n", frame_index);
@@ -362,6 +410,7 @@ static int run_stream_detect(rknn_app_context_t *rknn_app_ctx,
  */
 int main(int argc, char **argv)
 {
+    cv::setNumThreads(2);
     if (argc < 3)
     {
         printf("%s <model_path> <camera_id|device_path> [width] [height] [fps] [save_path] [push_port|rtmp_url]\n", argv[0]);
@@ -407,6 +456,11 @@ int main(int argc, char **argv)
     const char *save_path = (argc >= 7) ? argv[6] : NULL;
     const char *push_arg = (argc >= 8) ? argv[7] : NULL;
 
+    // HEADLESS builds never create a local preview window.
+#ifdef HEADLESS
+    int show_window = 0;
+    printf("HEADLESS build: use the HTTP browser preview; local HDMI window is disabled.\n");
+#else
     // 预览窗口: 只要有 DISPLAY 环境变量就打开; 在没有显示的板子上保持关闭
     int show_window = (getenv("DISPLAY") != NULL) ? 1 : 0;
     if (show_window)
@@ -417,6 +471,7 @@ int main(int argc, char **argv)
     {
         printf("preview disabled (no DISPLAY)\n");
     }
+#endif
 
     // Ctrl+C / kill 走优雅退出, 让 push_sink->stop() 能清理监听 socket
     struct sigaction sa;
@@ -477,14 +532,34 @@ int main(int argc, char **argv)
 
     rknn_app_context_t rknn_app_ctx;
     memset(&rknn_app_ctx, 0, sizeof(rknn_app_context_t));
-
-    init_post_process();
+    rknn_app_context_t auxiliary_ctx = {};
+    const char *aux_model=getenv("EDGEVISION_AUX_MODEL");
+    bool use_auxiliary=aux_model && *aux_model;
+    int auxiliary_class=0;
 
     int ret = init_yolov8_model(model_path, &rknn_app_ctx);
+    if (ret==0)
+        ret=load_model_labels(&rknn_app_ctx, getenv("EDGEVISION_LABELS") ? getenv("EDGEVISION_LABELS") : LABEL_NALE_TXT_PATH);
+    if (ret==0) ret=configure_model_execution(&rknn_app_ctx, getenv("EDGEVISION_CONFIDENCE"));
+    if (ret==0 && use_auxiliary) {
+        const char *aux_labels=getenv("EDGEVISION_AUX_LABELS");
+        if (!aux_labels || !*aux_labels) ret=-1;
+        if (ret==0) ret=init_yolov8_model(aux_model, &auxiliary_ctx);
+        if (ret==0) ret=load_model_labels(&auxiliary_ctx, aux_labels);
+        if (ret==0) ret=configure_model_execution(&auxiliary_ctx, getenv("EDGEVISION_AUX_CONFIDENCE") ? getenv("EDGEVISION_AUX_CONFIDENCE") : "0.5");
+        const char *class_option=getenv("EDGEVISION_AUX_CLASS");
+        if (class_option && *class_option) {
+            char *end=nullptr;
+            auxiliary_class=(int)strtol(class_option, &end, 10);
+            if (!end || *end) ret=-1;
+        }
+        if (auxiliary_class<0 || auxiliary_class>=auxiliary_ctx.model_classes) ret=-1;
+    }
     if (ret != 0)
     {
         printf("init_yolov8_model fail! ret=%d model_path=%s\n", ret, model_path);
-        deinit_post_process();
+        release_yolov8_model(&auxiliary_ctx);
+        release_yolov8_model(&rknn_app_ctx);
         if (mjpeg_sink)
         {
             mjpeg_sink->stop();
@@ -501,9 +576,10 @@ int main(int argc, char **argv)
     }
 
     ret = run_stream_detect(&rknn_app_ctx, source, req_w, req_h, req_fps,
-                            save_path, show_window, mjpeg_sink, rtmp_sink);
+                            save_path, show_window, mjpeg_sink, rtmp_sink,
+                            use_auxiliary ? &auxiliary_ctx : nullptr, auxiliary_class);
 
-    deinit_post_process();
+    release_yolov8_model(&auxiliary_ctx);
     release_yolov8_model(&rknn_app_ctx);
 
     if (mjpeg_sink)

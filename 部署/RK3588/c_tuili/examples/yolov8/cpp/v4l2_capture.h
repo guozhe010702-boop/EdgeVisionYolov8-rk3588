@@ -33,6 +33,7 @@ private:
     int height_ = 0;
     int fps_ = 0;
     int bytesperline_ = 0;          // Y / 亮度平面行 stride
+    int uv_bytesperline_ = 0;       // NV12M chroma plane has an independent stride
     char format_name_[16] = {0};
     unsigned int pixfmt_ = 0;
     bool multiplanar_ = false;      // Multi-planar 设备 (MIPI RKISP)

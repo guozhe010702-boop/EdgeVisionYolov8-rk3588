@@ -52,111 +52,44 @@
 #include <string.h>
 #include <sys/time.h>
 
+#include <fstream>
+#include <cmath>
+#include <string>
 #include <set>
 #include <vector>
 
-static char *labels[OBJ_CLASS_NUM];
+static char *labels[OBJ_CLASS_MAX] = {};
+static int label_count = 0;
 
-/**
- * @brief 将数值限制在 [min, max] 区间内
- * @param val 待裁剪浮点数
- * @param min 最小值
- * @param max 最大值
- * @return 裁剪后数值
- */
-inline static int clamp(float val, int min, int max) { return val > min ? (val < max ? val : max) : min; }
-
-/**
- * @brief 加载类别标签文本文件，读取每一行类别名称存入字符串数组
- * @param locationFilename 标签txt文件路径
- * @param label 输出：类别名称指针数组
- * @return 成功读取的类别数量；读取失败返回0
- */
-static int loadLabelName(const char *locationFilename, char *label[])
+inline static int clamp(float value, int minimum, int maximum)
 {
-    if (locationFilename == NULL || label == NULL || OBJ_CLASS_NUM <= 0)
-    {
-        printf("Invalid parameter!\n");
-        return 0;
-    }
-
-    printf("load label %s\n", locationFilename);
-
-    FILE *file = fopen(locationFilename, "r");
-    if (file == NULL)
-    {
-        printf("Open %s fail!\n", locationFilename);
-        return 0;
-    }
-
-    int i = 0;
-    const int max_line = OBJ_CLASS_NUM;
-    const size_t MAX_SINGLE_LINE = 512;
-    // 预分配行缓冲区，避免循环内频繁realloc
-    char *line_buf = (char *)malloc(MAX_SINGLE_LINE);
-    if (line_buf == NULL)
-    {
-        fclose(file);
-        printf("malloc line buffer failed\n");
-        return 0;
-    }
-
-    while (i < max_line)
-    {
-        int ch;
-        int line_idx = 0;
-
-        while ((ch = fgetc(file)) != '\n' && ch != EOF)
-        {
-            if ((size_t)line_idx >= MAX_SINGLE_LINE - 1)
-            {
-                while ((fgetc(file)) != '\n' && fgetc(file) != EOF)
-                    ;
-                break;
-            }
-            line_buf[line_idx++] = (char)ch;
-        }
-        line_buf[line_idx] = '\0';
-
-        // EOF并且当前无内容，终止读取
-        if (ch == EOF && line_idx == 0)
-        {
-            break;
-        }
-
-        size_t str_len = strlen(line_buf);
-        char *buffer = (char *)malloc(str_len + 1);
-        if (buffer == NULL)
-        {
-            printf("malloc label string failed\n");
-            break;
-        }
-        memcpy(buffer, line_buf, str_len + 1);
-        label[i++] = buffer;
-    }
-
-    free(line_buf);
-    fclose(file);
-
-    if (i < max_line)
-    {
-        for (int k = 0; k < i; k++)
-        {
-            free(label[k]);
-            label[k] = NULL;
-        }
-        i = 0;
-    }
-
-    return i;
+    return value > minimum ? (value < maximum ? value : maximum) : minimum;
 }
 
-/**
- * @brief 计算两个矩形框的IOU交并比
- * @param xmin0,ymin0,xmax0,ymax0 框1左上角、右下角坐标
- * @param xmin1,ymin1,xmax1,ymax1 框2左上角、右下角坐标
- * @return IOU值 [0,1]
- */
+static int loadLabelName(const char *filename, char **target, int capacity)
+{
+    if (!filename || !target || capacity < 1 || capacity > OBJ_CLASS_MAX) return -1;
+    std::ifstream input(filename);
+    if (!input) { printf("Cannot open labels: %s\n", filename); return -1; }
+    std::string line;
+    int count = 0;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line.size() >= OBJ_NAME_MAX_SIZE || count >= capacity) {
+            for (int i=0; i<count; ++i) { free(target[i]); target[i]=nullptr; }
+            return -1;
+        }
+        target[count] = strdup(line.c_str());
+        if (!target[count]) {
+            for (int i=0; i<count; ++i) { free(target[i]); target[i]=nullptr; }
+            return -1;
+        }
+        ++count;
+    }
+    printf("Loaded %d labels: %s\n", count, filename);
+    return count > 0 ? count : -1;
+}
+
 static float CalculateOverlap(float xmin0, float ymin0, float xmax0, float ymax0, float xmin1, float ymin1, float xmax1, float ymax1)
 {
     float w = fmax(0.f, fmin(xmax0, xmax1) - fmax(xmin0, xmin1) + 1.0);
@@ -377,7 +310,7 @@ static int process_u8(uint8_t *box_tensor, int32_t box_zp, float box_scale,
                       std::vector<float> &boxes,
                       std::vector<float> &objProbs,
                       std::vector<int> &classId,
-                      float threshold)
+                      float threshold, int class_count)
 {
     int validCount = 0;
     int grid_len = grid_h * grid_w;
@@ -401,7 +334,7 @@ static int process_u8(uint8_t *box_tensor, int32_t box_zp, float box_scale,
             }
 
             uint8_t max_score = -score_zp;
-            for (int c = 0; c < OBJ_CLASS_NUM; c++)
+            for (int c = 0; c < class_count; c++)
             {
                 if ((score_tensor[offset] > score_thres_u8) && (score_tensor[offset] > max_score))
                 {
@@ -468,7 +401,7 @@ static int process_i8(int8_t *box_tensor, int32_t box_zp, float box_scale,
                       std::vector<float> &boxes,
                       std::vector<float> &objProbs,
                       std::vector<int> &classId,
-                      float threshold)
+                      float threshold, int class_count)
 {
     int validCount = 0;
     int grid_len = grid_h * grid_w;
@@ -492,7 +425,7 @@ static int process_i8(int8_t *box_tensor, int32_t box_zp, float box_scale,
             }
 
             int8_t max_score = -score_zp;
-            for (int c = 0; c < OBJ_CLASS_NUM; c++)
+            for (int c = 0; c < class_count; c++)
             {
                 if ((score_tensor[offset] > score_thres_i8) && (score_tensor[offset] > max_score))
                 {
@@ -555,7 +488,7 @@ static int process_fp32(float *box_tensor, float *score_tensor, float *score_sum
                         std::vector<float> &boxes,
                         std::vector<float> &objProbs,
                         std::vector<int> &classId,
-                        float threshold)
+                        float threshold, int class_count)
 {
     int validCount = 0;
     int grid_len = grid_h * grid_w;
@@ -576,7 +509,7 @@ static int process_fp32(float *box_tensor, float *score_tensor, float *score_sum
             }
 
             float max_score = 0;
-            for (int c = 0; c < OBJ_CLASS_NUM; c++)
+            for (int c = 0; c < class_count; c++)
             {
                 if ((score_tensor[offset] > threshold) && (score_tensor[offset] > max_score))
                 {
@@ -644,7 +577,7 @@ static int process_i8_rv1106(int8_t *box_tensor, int32_t box_zp, float box_scale
                              std::vector<float> &boxes,
                              std::vector<float> &objProbs,
                              std::vector<int> &classId,
-                             float threshold)
+                             float threshold, int class_count)
 {
     int validCount = 0;
     int grid_len = grid_h * grid_w;
@@ -669,8 +602,8 @@ static int process_i8_rv1106(int8_t *box_tensor, int32_t box_zp, float box_scale
             }
 
             int8_t max_score = -score_zp;
-            offset = offset * OBJ_CLASS_NUM;
-            for (int c = 0; c < OBJ_CLASS_NUM; c++)
+            offset = offset * class_count;
+            for (int c = 0; c < class_count; c++)
             {
                 if ((score_tensor[offset + c] > score_thres_i8) && (score_tensor[offset + c] > max_score))
                 {
@@ -732,6 +665,8 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
 #else
     rknn_output *_outputs = (rknn_output *)outputs;
 #endif
+    const int class_count = app_ctx->model_classes > 0 ? app_ctx->model_classes : label_count;
+    if (class_count < 1 || class_count > OBJ_CLASS_MAX) return -1;
     std::vector<float> filterBoxes;
     std::vector<float> objProbs;
     std::vector<int> classId;
@@ -775,7 +710,7 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
             validCount += process_i8_rv1106((int8_t *)_outputs[box_idx]->virt_addr, app_ctx->output_attrs[box_idx].zp, app_ctx->output_attrs[box_idx].scale,
                                             (int8_t *)_outputs[score_idx]->virt_addr, app_ctx->output_attrs[score_idx].zp,
                                             app_ctx->output_attrs[score_idx].scale, (int8_t *)score_sum, score_sum_zp, score_sum_scale,
-                                            grid_h, grid_w, stride, dfl_len, filterBoxes, objProbs, classId, conf_threshold);
+                                            grid_h, grid_w, stride, dfl_len, filterBoxes, objProbs, classId, conf_threshold, class_count);
         }
         else
         {
@@ -812,20 +747,20 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
                                      (uint8_t *)_outputs[score_idx].buf, app_ctx->output_attrs[score_idx].zp, app_ctx->output_attrs[score_idx].scale,
                                      (uint8_t *)score_sum, score_sum_zp, score_sum_scale,
                                      grid_h, grid_w, stride, dfl_len,
-                                     filterBoxes, objProbs, classId, conf_threshold);
+                                     filterBoxes, objProbs, classId, conf_threshold, class_count);
 #else
             validCount += process_i8((int8_t *)_outputs[box_idx].buf, app_ctx->output_attrs[box_idx].zp, app_ctx->output_attrs[box_idx].scale,
                                      (int8_t *)_outputs[score_idx].buf, app_ctx->output_attrs[score_idx].zp, app_ctx->output_attrs[score_idx].scale,
                                      (int8_t *)score_sum, score_sum_zp, score_sum_scale,
                                      grid_h, grid_w, stride, dfl_len,
-                                     filterBoxes, objProbs, classId, conf_threshold);
+                                     filterBoxes, objProbs, classId, conf_threshold, class_count);
 #endif
         }
         else
         {
             validCount += process_fp32((float *)_outputs[box_idx].buf, (float *)_outputs[score_idx].buf, (float *)score_sum,
                                        grid_h, grid_w, stride, dfl_len,
-                                       filterBoxes, objProbs, classId, conf_threshold);
+                                       filterBoxes, objProbs, classId, conf_threshold, class_count);
         }
 #endif
     }
@@ -886,48 +821,94 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
  */
 int init_post_process()
 {
-    int ret = 0;
-    ret = loadLabelName(LABEL_NALE_TXT_PATH, labels);
-    if (ret < 0)
-    {
-        printf("Load %s failed!\n", LABEL_NALE_TXT_PATH);
+    deinit_post_process();
+    const char *path = getenv("EDGEVISION_LABELS");
+    label_count = loadLabelName(path && *path ? path : LABEL_NALE_TXT_PATH, labels, OBJ_CLASS_MAX);
+    return label_count > 0 ? 0 : -1;
+}
+
+const char *coco_cls_to_name(int cls_id)
+{
+    return cls_id >= 0 && cls_id < label_count && labels[cls_id] ? labels[cls_id] : "unknown";
+}
+
+void deinit_post_process()
+{
+    for (int i=0; i<OBJ_CLASS_MAX; ++i) { free(labels[i]); labels[i]=nullptr; }
+    label_count=0;
+}
+
+int yolo_class_count(const rknn_input_output_num *io, const rknn_tensor_attr *outputs)
+{
+    if (!io || io->n_output != 9) return -1;
+    int classes = outputs[1].dims[1];
+    if (classes < 1 || classes > OBJ_CLASS_MAX) return -1;
+    for (int i=0; i<9; i+=3) {
+        const rknn_tensor_attr &box=outputs[i], &score=outputs[i+1], &sum=outputs[i+2];
+        if (box.n_dims!=4 || score.n_dims!=4 || sum.n_dims!=4 ||
+            box.fmt!=RKNN_TENSOR_NCHW || score.fmt!=RKNN_TENSOR_NCHW || sum.fmt!=RKNN_TENSOR_NCHW ||
+            box.dims[0]!=1 || score.dims[0]!=1 || sum.dims[0]!=1 || box.dims[1]!=64 ||
+            score.dims[1]!=(unsigned)classes || sum.dims[1]!=1 ||
+            box.dims[2]!=score.dims[2] || box.dims[3]!=score.dims[3] ||
+            sum.dims[2]!=score.dims[2] || sum.dims[3]!=score.dims[3] ||
+            !box.dims[2] || !box.dims[3]) return -1;
+    }
+    return classes;
+}
+
+void free_model_labels(rknn_app_context_t *app_ctx)
+{
+    if (!app_ctx->class_names) return;
+    for (int i=0; i<app_ctx->model_classes; ++i) free(app_ctx->class_names[i]);
+    free(app_ctx->class_names);
+    app_ctx->class_names=nullptr;
+}
+
+int load_model_labels(rknn_app_context_t *app_ctx, const char *filename)
+{
+    if (app_ctx->model_classes < 1 || app_ctx->model_classes > OBJ_CLASS_MAX) return -1;
+    free_model_labels(app_ctx);
+    app_ctx->class_names=(char **)calloc(app_ctx->model_classes, sizeof(char *));
+    if (!app_ctx->class_names) return -1;
+    int count=loadLabelName(filename, app_ctx->class_names, app_ctx->model_classes);
+    if (count!=app_ctx->model_classes) {
+        printf("Label count mismatch: model=%d file=%d\n", app_ctx->model_classes, count);
+        free_model_labels(app_ctx);
         return -1;
     }
     return 0;
 }
 
-/**
- * @brief 根据类别ID获取类别名称字符串
- * @param cls_id 类别编号
- * @return 类别名字符串指针；越界返回"null"
- */
-char *coco_cls_to_name(int cls_id)
+const char *model_class_name(const rknn_app_context_t *app_ctx, int cls_id)
 {
-
-    if (cls_id >= OBJ_CLASS_NUM)
-    {
-        return "null";
-    }
-
-    if (labels[cls_id])
-    {
-        return labels[cls_id];
-    }
-
-    return "null";
+    if (cls_id<0 || cls_id>=app_ctx->model_classes) return "unknown";
+    return app_ctx->class_names ? app_ctx->class_names[cls_id] : coco_cls_to_name(cls_id);
 }
 
-/**
- * @brief 释放标签名称内存，后处理资源反初始化
- */
-void deinit_post_process()
+int configure_model_execution(rknn_app_context_t *app_ctx, const char *confidence)
 {
-    for (int i = 0; i < OBJ_CLASS_NUM; i++)
-    {
-        if (labels[i] != nullptr)
-        {
-            free(labels[i]);
-            labels[i] = nullptr;
+    app_ctx->confidence_threshold=BOX_THRESH;
+    if (confidence && *confidence) {
+        char *end=nullptr;
+        float value=strtof(confidence, &end);
+        if (!end || *end || !std::isfinite(value) || value<=0 || value>=1) {
+            printf("Invalid confidence threshold: %s\n", confidence);
+            return -1;
         }
+        app_ctx->confidence_threshold=value;
     }
+    const char *cores=getenv("EDGEVISION_NPU_CORES");
+    if (cores && *cores) {
+        char *end=nullptr;
+        long value=strtol(cores, &end, 10);
+        if (!end || *end || (value!=0 && value!=1 && value!=2 && value!=4 && value!=7)) return -1;
+        int result=rknn_set_core_mask(app_ctx->rknn_ctx, (rknn_core_mask)value);
+        if (result!=RKNN_SUCC) {
+            printf("NPU core binding failed: mask=%ld result=%d\n", value, result);
+            return -1;
+        }
+        printf("NPU core mask=%ld\n", value);
+    }
+    printf("Model classes=%d confidence=%.3f\n", app_ctx->model_classes, app_ctx->confidence_threshold);
+    return 0;
 }

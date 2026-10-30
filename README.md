@@ -1,5 +1,11 @@
 # EdgeVision-RK3588
 
+本仓库用于 EVM3588 / IMX415 的部署适配：[EdgeVisionYolov8-rk3588](https://github.com/guozhe010702-boop/EdgeVisionYolov8-rk3588)。基于 [Alba8228/EdgeVision-RK3588](https://github.com/Alba8228/EdgeVision-RK3588)，保留上游历史与第三方许可。
+
+> EVM3588 / IMX415 本地适配已提供：见 [部署与运行说明](README_EMA3588.md) 和 [实测记录](VALIDATION_EMA3588.md)。当前板端入口使用原生编译的 `ema-runtime/`。
+
+> 2026-10-30 更新：本板新增 COCO80 室内模型与独立安全帽模型，默认 `indoor-helmet`；下文原仓库的训练介绍和性能参考不等于本次模型的实测。当前双模型约 13.5 fps，现场人员已确认，水杯/椅子/安全帽现场验收及长期稳定性仍待完成。
+
 基于 **Rockchip RK3588 NPU** 的边缘视觉目标检测全栈工程，覆盖 **模型训练 → 量化转换 → 边缘部署 → 多路推理** 完整 pipeline。
 
 项目以 YOLOv8 为核心检测网络，针对宿舍场景自建数据集完成训练，并通过 QAT 量化感知训练、RKNN 工具链转换、C++/Python 双端推理优化，在 RK3588 边缘设备上实现高效能、低延迟的实时目标检测。

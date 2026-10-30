@@ -1,0 +1,246 @@
+{
+  "schema_version": 1,
+  "default_profile": "indoor-helmet",
+  "sources": [
+    {
+      "file": "source\\yolov8s.pt",
+      "bytes": 22588772,
+      "sha256": "1f47a78bf100391c2a140b7ac73a1caae18c32779be7d310658112f7ac9aa78a",
+      "url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8s.pt"
+    },
+    {
+      "file": "source\\coco80.txt",
+      "bytes": 621,
+      "sha256": "bd17f1ee35d5f3c862a4894605855abbb9dda4b0621fdb0ac4c2c8c7bb7e730a",
+      "url": "https://raw.githubusercontent.com/airockchip/rknn_model_zoo/main/examples/yolov8/model/coco_80_labels_list.txt"
+    },
+    {
+      "file": "source\\helmet-yolov8n.pt",
+      "bytes": 6229688,
+      "sha256": "05ed3a517485292d42d6eb6c9be3987ea51cd162e04807d2741eadcac8a19e6c",
+      "url": "https://huggingface.co/keremberke/yolov8n-hard-hat-detection/resolve/287bafa2feb311ee45d21f9e9b33315ff6ff955d/best.pt"
+    },
+    {
+      "file": "source\\coco128.zip",
+      "bytes": 6983030,
+      "sha256": "61e5e3028863d8ffc3b81d6a514603954889f0edd5e4b44c4ce60b2da99aeb8e",
+      "url": "https://github.com/ultralytics/assets/releases/download/v0.0.0/coco128.zip"
+    }
+  ],
+  "models": {
+    "coco80": {
+      "id": "coco80",
+      "classes": [
+        "person",
+        "bicycle",
+        "car",
+        "motorcycle",
+        "airplane",
+        "bus",
+        "train",
+        "truck",
+        "boat",
+        "traffic light",
+        "fire hydrant",
+        "stop sign",
+        "parking meter",
+        "bench",
+        "bird",
+        "cat",
+        "dog",
+        "horse",
+        "sheep",
+        "cow",
+        "elephant",
+        "bear",
+        "zebra",
+        "giraffe",
+        "backpack",
+        "umbrella",
+        "handbag",
+        "tie",
+        "suitcase",
+        "frisbee",
+        "skis",
+        "snowboard",
+        "sports ball",
+        "kite",
+        "baseball bat",
+        "baseball glove",
+        "skateboard",
+        "surfboard",
+        "tennis racket",
+        "bottle",
+        "wine glass",
+        "cup",
+        "fork",
+        "knife",
+        "spoon",
+        "bowl",
+        "banana",
+        "apple",
+        "sandwich",
+        "orange",
+        "broccoli",
+        "carrot",
+        "hot dog",
+        "pizza",
+        "donut",
+        "cake",
+        "chair",
+        "couch",
+        "potted plant",
+        "bed",
+        "dining table",
+        "toilet",
+        "tv",
+        "laptop",
+        "mouse",
+        "remote",
+        "keyboard",
+        "cell phone",
+        "microwave",
+        "oven",
+        "toaster",
+        "sink",
+        "refrigerator",
+        "book",
+        "clock",
+        "vase",
+        "scissors",
+        "teddy bear",
+        "hair drier",
+        "toothbrush"
+      ],
+      "input_size": [
+        640,
+        640
+      ],
+      "precision": "int8",
+      "source_pt_sha256": "1f47a78bf100391c2a140b7ac73a1caae18c32779be7d310658112f7ac9aa78a",
+      "onnx_sha256": "6734cc7038fba9424d368703d25ddd364183ea6c51d264cc8230863bd58e2489",
+      "rknn_sha256": "efa1e4a7952e3cae9529b0aa61d26f1d1b47aa2a50f958972a4e04b103fc784a",
+      "labels_sha256": "bd17f1ee35d5f3c862a4894605855abbb9dda4b0621fdb0ac4c2c8c7bb7e730a",
+      "calibration_images": 64,
+      "validation_images": 64,
+      "onnx_max_absolute_error": 5.91278076171875e-05,
+      "confidence": 0.35,
+      "pad_value": 114,
+      "toolkit": "2.3.2",
+      "exporter": "airockchip/ultralytics_yolo11@0692e9297670acf4cc6d0cec773d7a9493cb8a5f",
+      "seconds": 29.834199178993003,
+      "tested_on_board": true,
+      "board_validation": {
+        "date": "2026-10-30",
+        "device": "EVM3588 B1 / RK3588",
+        "runtime": "2.3.0",
+        "driver": "0.8.2",
+        "images": 64,
+        "iou_threshold": 0.5,
+        "scope": "Small public sanity subsets, not a complete unseen mAP benchmark",
+        "onnx_agreement": {
+          "tp": 280,
+          "fp": 4,
+          "fn": 12,
+          "precision": 0.9859154929577465,
+          "recall": 0.958904109589041
+        },
+        "zero_copy_agreement": {
+          "tp": 284,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "ground_truth_sanity": {
+          "tp": 237,
+          "fp": 47,
+          "fn": 254,
+          "precision": 0.8345070422535211,
+          "recall": 0.48268839103869654
+        },
+        "long_running_stability_passed": false
+      }
+    },
+    "helmet": {
+      "id": "helmet",
+      "classes": [
+        "Hardhat",
+        "NO-Hardhat"
+      ],
+      "input_size": [
+        640,
+        640
+      ],
+      "precision": "int8",
+      "source_pt_sha256": "05ed3a517485292d42d6eb6c9be3987ea51cd162e04807d2741eadcac8a19e6c",
+      "onnx_sha256": "24251ab809bbb26ea2413e33b491b7dfb7a2826a9a2e2e0d336988c24c5b03a7",
+      "rknn_sha256": "33912dd3654fa53e51f1f4050a98c3d97f4f2aae227fa54ce53ddf9b2102f80f",
+      "labels_sha256": "436ae8cf061d3991d656a7948b8fe983fdfa3fc98c38e43e5327eafce807646b",
+      "calibration_images": 32,
+      "validation_images": 16,
+      "onnx_max_absolute_error": 4.673004150390625e-05,
+      "confidence": 0.5,
+      "pad_value": 114,
+      "toolkit": "2.3.2",
+      "exporter": "airockchip/ultralytics_yolo11@0692e9297670acf4cc6d0cec773d7a9493cb8a5f",
+      "seconds": 7.327325368009042,
+      "tested_on_board": true,
+      "board_validation": {
+        "date": "2026-10-30",
+        "device": "EVM3588 B1 / RK3588",
+        "runtime": "2.3.0",
+        "driver": "0.8.2",
+        "images": 16,
+        "iou_threshold": 0.5,
+        "scope": "Small public sanity subsets, not a complete unseen mAP benchmark",
+        "onnx_agreement": {
+          "tp": 31,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "zero_copy_agreement": {
+          "tp": 31,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "ground_truth_sanity": {
+          "tp": 29,
+          "fp": 2,
+          "fn": 12,
+          "precision": 0.9354838709677419,
+          "recall": 0.7073170731707317
+        },
+        "long_running_stability_passed": false
+      }
+    }
+  },
+  "validation": {
+    "report": "VALIDATION_EMA3588.md",
+    "coco_images": 64,
+    "helmet_images": 16,
+    "calibration_disjoint_from_validation": true,
+    "scope": "small public sanity subsets; not full held-out mAP"
+  },
+  "class_aliases_zh": {
+    "person": "人",
+    "cup": "杯子",
+    "bottle": "瓶子",
+    "chair": "椅子",
+    "Hardhat": "安全帽"
+  },
+  "training_performed": false,
+  "deployment_validation": {
+    "date": "2026-10-30",
+    "physical_camera": "IMX415 / /dev/video44",
+    "physical_person_visually_confirmed": true,
+    "physical_cup_chair_helmet_acceptance_completed": false,
+    "dual_model_fps_latest_30s": 13.580766666666667,
+    "long_running_stability_passed": false,
+    "unresolved_issue": "Previous session exited after RKNN task submission failure at about frame 76386."
+  }
+}

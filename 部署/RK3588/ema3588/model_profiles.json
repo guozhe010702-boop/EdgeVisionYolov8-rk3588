@@ -1,0 +1,27 @@
+{
+  "legacy": {
+    "description": "Original Purple / Yellow reproduction baseline",
+    "model": "model/best.rknn",
+    "labels": "model/coco_80_labels_list.txt",
+    "confidence": 0.25,
+    "npu_core_mask": 0
+  },
+  "indoor": {
+    "description": "YOLOv8s COCO80 daily objects: person, cup, bottle, chair, etc.",
+    "model": "models/coco80/model.rknn",
+    "labels": "models/coco80/classes.txt",
+    "confidence": 0.35,
+    "npu_core_mask": 7
+  },
+  "indoor-helmet": {
+    "description": "COCO80 plus a separate YOLOv8n Hardhat detector on the same frame",
+    "model": "models/coco80/model.rknn",
+    "labels": "models/coco80/classes.txt",
+    "confidence": 0.35,
+    "npu_core_mask": 7,
+    "aux_model": "models/helmet/model.rknn",
+    "aux_labels": "models/helmet/classes.txt",
+    "aux_confidence": 0.5,
+    "aux_class": 0
+  }
+}

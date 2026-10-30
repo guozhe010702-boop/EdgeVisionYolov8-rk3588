@@ -50,6 +50,9 @@ typedef struct
     int model_channel;
     int model_width;
     int model_height;
+    int model_classes;
+    char **class_names;
+    float confidence_threshold;
     bool is_quant;
 } rknn_app_context_t;
 

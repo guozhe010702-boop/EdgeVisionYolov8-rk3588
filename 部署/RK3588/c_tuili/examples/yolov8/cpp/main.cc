@@ -73,7 +73,8 @@ int main(int argc, char **argv)
     rknn_app_context_t rknn_app_ctx;
     memset(&rknn_app_ctx, 0, sizeof(rknn_app_context_t));
 
-    init_post_process();
+    image_buffer_t src_image;
+    memset(&src_image, 0, sizeof(image_buffer_t));
 
     ret = init_yolov8_model(model_path, &rknn_app_ctx);
     if (ret != 0)
@@ -82,8 +83,10 @@ int main(int argc, char **argv)
         goto out;
     }
 
-    image_buffer_t src_image;
-    memset(&src_image, 0, sizeof(image_buffer_t));
+    ret=load_model_labels(&rknn_app_ctx, getenv("EDGEVISION_LABELS") ? getenv("EDGEVISION_LABELS") : LABEL_NALE_TXT_PATH);
+    if (ret!=0) goto out;
+    ret=configure_model_execution(&rknn_app_ctx, getenv("EDGEVISION_CONFIDENCE"));
+    if (ret!=0) goto out;
     ret = read_image(image_path, &src_image);
 
 #if defined(RV1106_1103) 
@@ -118,10 +121,13 @@ int main(int argc, char **argv)
     for (int i = 0; i < od_results.count; i++)
     {
         object_detect_result *det_result = &(od_results.results[i]);
-        printf("%s @ (%d %d %d %d) %.3f\n", coco_cls_to_name(det_result->cls_id),
+        printf("%s @ (%d %d %d %d) %.3f\n", model_class_name(&rknn_app_ctx, det_result->cls_id),
                det_result->box.left, det_result->box.top,
                det_result->box.right, det_result->box.bottom,
                det_result->prop);
+        printf("DETECTION {\"class_id\":%d,\"score\":%.6f,\"box\":[%d,%d,%d,%d]}\n",
+            det_result->cls_id, det_result->prop, det_result->box.left, det_result->box.top,
+            det_result->box.right, det_result->box.bottom);
         int x1 = det_result->box.left;
         int y1 = det_result->box.top;
         int x2 = det_result->box.right;
@@ -129,19 +135,20 @@ int main(int argc, char **argv)
 
         draw_rectangle(&src_image, x1, y1, x2 - x1, y2 - y1, COLOR_BLUE, 3);
 
-        sprintf(text, "%s %.1f%%", coco_cls_to_name(det_result->cls_id), det_result->prop * 100);
-        draw_text(&src_image, text, x1, y1 - 20, COLOR_RED, 10);
+        snprintf(text, sizeof(text), "%s %.1f%%", model_class_name(&rknn_app_ctx, det_result->cls_id), det_result->prop * 100);
+        draw_text(&src_image, text, x1, y1 > 20 ? y1 - 20 : 0, COLOR_RED, 10);
     }
 
-    write_image("out.png", &src_image);
+    printf("DETECTION_DONE {\"count\":%d}\n", od_results.count);
+    if (!getenv("EDGEVISION_NO_IMAGE")) ret=write_image("out.png", &src_image)>0 ? 0 : -1;
 
 out:
     deinit_post_process();
 
-    ret = release_yolov8_model(&rknn_app_ctx);
-    if (ret != 0)
+    if (release_yolov8_model(&rknn_app_ctx) != 0)
     {
-        printf("release_yolov8_model fail! ret=%d\n", ret);
+        printf("release_yolov8_model fail!\n");
+        ret=-1;
     }
 
     if (src_image.virt_addr != NULL)
@@ -154,5 +161,5 @@ out:
 #endif
     }
 
-    return 0;
+    return ret;
 }

@@ -114,6 +114,12 @@ int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx) {
         printf("rknn_init fail! ret=%d\n", ret);
         return -1;
     }
+    {
+        rknn_sdk_version version;
+        memset(&version, 0, sizeof(version));
+        if (rknn_query(ctx, RKNN_QUERY_SDK_VERSION, &version, sizeof(version)) == RKNN_SUCC)
+            printf("RKNN runtime=%s driver=%s\n", version.api_version, version.drv_version);
+    }
 
     // Get Model Input Output Number
     rknn_input_output_num io_num;
@@ -222,6 +228,13 @@ int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx) {
             printf("rknn_query OUTPUT_ATTR[%d] fail! ret=%d\n", i, ret);
             goto cleanup;
         }
+    }
+
+    app_ctx->model_classes=yolo_class_count(&io_num, output_attrs);
+    if (app_ctx->model_classes<1) {
+        printf("Unsupported YOLO output contract\n");
+        ret=-1;
+        goto cleanup;
     }
 
     // Allocate heap copies of attrs (4 arrays)
@@ -344,6 +357,7 @@ int NC1HWC2_i8_to_NCHW_i8(const int8_t *src, int8_t *dst, int *dims, int channel
  * @return 0成功，-1有任何 rknn_destroy_mem/rknn_destroy 失败
  */
 int release_yolov8_model(rknn_app_context_t *app_ctx) {
+    free_model_labels(app_ctx);
     int ret;
     int any_fail = 0;
 
@@ -409,7 +423,7 @@ int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, obj
     image_buffer_t dst_img;
     letterbox_t letter_box;
     const float nms_threshold = NMS_THRESH;      // 默认的NMS阈值
-    const float box_conf_threshold = BOX_THRESH; // 默认的置信度阈值
+    const float box_conf_threshold = app_ctx->confidence_threshold>0 ? app_ctx->confidence_threshold : BOX_THRESH;
     int bg_color = 114;
 
     if ((!app_ctx) || !(img) || (!od_results)) {
@@ -497,7 +511,7 @@ int inference_yolov8_model(rknn_app_context_t *app_ctx, image_buffer_t *img, obj
 
     // Post Process — 仅在所有输出转换成功时执行
     if (ret == 0) {
-        post_process(app_ctx, outputs, &letter_box, box_conf_threshold, nms_threshold, od_results);
+        ret=post_process(app_ctx, outputs, &letter_box, box_conf_threshold, nms_threshold, od_results);
     }
 
     for (int i = 0; i < app_ctx->io_num.n_output; i++) {

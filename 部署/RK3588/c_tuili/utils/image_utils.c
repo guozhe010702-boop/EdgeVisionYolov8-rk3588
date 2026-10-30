@@ -637,8 +637,10 @@ static int convert_image_rga(image_buffer_t* src_img, image_buffer_t* dst_img, i
         p_imcolor[1] = color;
         p_imcolor[2] = color;
         p_imcolor[3] = color;
+#ifdef EDGEVISION_VERBOSE
         printf("fill dst image (x y w h)=(%d %d %d %d) with color=0x%x\n",
             dst_whole_rect.x, dst_whole_rect.y, dst_whole_rect.width, dst_whole_rect.height, imcolor);
+#endif
         ret_rga = imfill(rga_buf_dst, dst_whole_rect, imcolor);
         if (ret_rga <= 0) {
             if (dst != NULL) {
